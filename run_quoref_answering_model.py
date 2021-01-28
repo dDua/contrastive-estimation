@@ -20,10 +20,8 @@ from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger, Output
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 from transformers import AdamW
 from model.answering_model import T5QA
-from configs.t5_ropes_config import get_arguments as get_arguments_ropes
 from configs.t5_quoref_config import get_arguments as get_arguments_quoref
 from data.data_processing_quoref import QuorefQADataBaseline
-from data.data_processing_torque import TorqueQADataBaseline
 from configs.t5_torque_config import get_arguments as get_arguments_torque
 
 logger = logging.getLogger(__file__)
@@ -37,7 +35,7 @@ def average_distributed_scalar(scalar, args):
     return scalar_t.item()
 
 def train():
-    args, logger = get_arguments_torque()
+    args, logger = get_arguments_quoref()
     queue = Queue()
     # logging is set to INFO (resp. WARN) for main (resp. auxiliary) process. logger.info => log main process only, logger.warning => log all processes
     logging.basicConfig(level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
