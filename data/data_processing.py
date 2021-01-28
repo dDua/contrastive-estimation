@@ -1,5 +1,6 @@
 import torch
 import json
+import os
 import numpy as np
 from data.utils import get_data_loaders, process_all_contexts
 
@@ -15,7 +16,8 @@ class HotpotQADataBase(object):
         self.model_inputs = ["input_ids", "answer_input", "answer_output", "question_offset",
                              "attention_mask", "token_type_ids", "answer_mask", "question_ids", "question_mask"]
         self.special_token_ids = tokenizer.convert_tokens_to_ids(self.special_tokens)
-        self.reasoning_ann = json.load(open(self.args.reasoning_file))
+        if os.path.isfile(self.args.reasoning_file):
+            self.reasoning_ann = json.load(open(self.args.reasoning_file))
 
 
     def get_instance(self, instance):
