@@ -15,7 +15,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader, TensorDataset
 import spacy
 from spacy.symbols import nsubj, VERB
-from scripts.comparison_type import sup_replacements
+from scripts.comparison_type import sup_replacements, superlatives
 from collections import deque
 
 nlp = spacy.load("en_core_web_sm")
@@ -222,6 +222,23 @@ def process_all_contexts_wikihop(args, tokenizer, instance, max_passage_len, add
         context_info.append({"title_text": title, "text": full_context,
                              "title_tokens": title_ids["input_ids"], "tokens": full_context_ids,
                              "sentence_offsets": line_lengths, "sf_indices": sf_indices})
+    return context_info
+
+
+def process_all_contexts_quoref(tokenizer, instance, max_passage_len, lowercase=True):
+    context_info = []
+    line = instance["context"] if lowercase else instance["context"].lower()
+    full_context_ids = tokenizer.encode_plus(line)["input_ids"][:max_passage_len]
+
+    context_info.append({"tokens": full_context_ids, "sentence_offsets": [len(full_context_ids)]})
+    return context_info
+
+def process_all_contexts_torque(tokenizer, instance, max_passage_len, lowercase=True):
+    context_info = []
+    line = instance["passage"] if lowercase else instance["passage"].lower()
+    full_context_ids = tokenizer.encode_plus(line)["input_ids"][:max_passage_len]
+
+    context_info.append({"tokens": full_context_ids, "sentence_offsets": [len(full_context_ids)]})
     return context_info
 
 def process_all_contexts_ropes(tokenizer, instance, max_passage_len, add_sent_ends=False, lowercase=True):
@@ -482,6 +499,10 @@ def get_dataset(logger, dataset, dataset_cache, dataset_path, split='train', mod
         all_instances = get_ropes_instances(dataset, dataset_path, mode)
     elif "qasrl" in dataset.__class__.__name__.lower():
         all_instances = get_qasrl_instances(dataset, dataset_path, mode)
+    elif "quoref" in dataset.__class__.__name__.lower():
+        all_instances = get_quoref_instances(dataset, dataset_path, mode)
+    elif "torque" in dataset.__class__.__name__.lower():
+        all_instances = get_torque_instances(dataset, dataset_path, mode)
 
     if dataset_cache:
         torch.save(all_instances, dataset_cache)
@@ -519,9 +540,59 @@ def get_hotopot_instances(dataset, dataset_path, mode):
                     all_instances.append(new_inst)
 
         except Exception:
-            print(inst["_id"])
             traceback.print_exc()
+            print(inst["_id"])
+
     return all_instances
+
+def get_quoref_instances(dataset, dataset_path, mode):
+    all_instances = []
+    for title in json.load(open(dataset_path))["data"]:
+        for inst in tqdm(title["paragraphs"]):
+            try:
+                inst['mode'] = mode
+                new_inst = dataset.get_instance(inst)
+                if new_inst is not None:
+                    if isinstance(new_inst, list):
+                        all_instances.extend(new_inst)
+                    else:
+                        all_instances.append(new_inst)
+
+            except Exception:
+                traceback.print_exc()
+    return all_instances
+
+
+def get_torque_instances(dataset, dataset_path, mode):
+    all_instances = []
+    data = json.load(open(dataset_path))
+    try:
+        if isinstance(data, list):
+            for article in data:
+                for inst in article["passages"]:
+                    inst['mode'] = mode
+                    new_inst = dataset.get_instance(inst)
+                    if new_inst is not None:
+                        if isinstance(new_inst, list):
+                            all_instances.extend(new_inst)
+                        else:
+                            all_instances.append(new_inst)
+
+        else:
+            for _, inst in data.items():
+                inst['mode'] = mode
+                new_inst = dataset.get_instance(inst)
+                if new_inst is not None:
+                    if isinstance(new_inst, list):
+                        all_instances.extend(new_inst)
+                    else:
+                        all_instances.append(new_inst)
+
+    except Exception:
+        traceback.print_exc()
+
+    return all_instances
+
 
 def get_qasrl_instances(dataset, dataset_path, mode):
     all_instances = []
@@ -765,10 +836,10 @@ def get_contrast_qa_old(qa_pairs):
 
     return pairs
 
-def get_contrast_qa(qa_pairs, max_group_size=3, fixed_group_size=2):
+def get_contrast_qa(qa_pairs, max_group_size=3, fixed_group_size=2, force_group_size=False):
     scores = np.zeros(shape=(len(qa_pairs), len(qa_pairs)))
-    comparatives = set(['more', 'less', 'better', 'worse'])
-    stopwords = set(["the"])#, "team", "group", "cell"])
+    comparatives = superlatives
+    stopwords = set(["the"])
     comp_stop = comparatives | stopwords
     for i in range(len(qa_pairs)):
         for j in range(len(qa_pairs)):
@@ -788,14 +859,27 @@ def get_contrast_qa(qa_pairs, max_group_size=3, fixed_group_size=2):
                 scores_a = 0 if a_p == 1 or a_r == 1 else 1
                 scores[i][j] = scores_a + scores_q
 
-    groups = []
-    for i in range(scores.shape[0]):
-        match_indices = np.where(scores[i] == np.max(scores[i]))
-        k_pairs = [sorted([(i, qa_pairs[i][1].lower()), (el, qa_pairs[el][1].lower())], key=lambda x: x[0])
-                   for el in match_indices[0].tolist() if qa_pairs[i][1] != qa_pairs[el][1]]
-        groups += k_pairs
+    if not force_group_size:
+        groups, singleton = [], []
+        for i in range(scores.shape[0]):
+            if np.max(scores[i]) >= 1.6:
+                match_indices = np.where(scores[i] == np.max(scores[i]))
+                k_pairs = [sorted([(i, qa_pairs[i][1].lower()), (el, qa_pairs[el][1].lower())], key=lambda x: x[0])
+                           for el in match_indices[0].tolist() if qa_pairs[i][1] != qa_pairs[el][1]]
+                groups += k_pairs
+            else:
+                singleton.append([i])
+    else:
+        groups = []
+        for i in range(scores.shape[0]):
+            match_indices = np.where(scores[i] == np.max(scores[i]))
+            k_pairs = [sorted([(i, qa_pairs[i][1].lower()), (el, qa_pairs[el][1].lower())], key=lambda x: x[0])
+                       for el in match_indices[0].tolist() if qa_pairs[i][1] != qa_pairs[el][1]]
+            groups += k_pairs
 
     clusters = transitive_closure(groups)
+    if not force_group_size:
+        clusters += singleton
 
     unique_clusters = [set(item) for item in set(frozenset(item) for item in clusters)]
 
