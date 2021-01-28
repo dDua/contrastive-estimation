@@ -55,7 +55,7 @@ def inference_baseline():
     predictions = []
     eos_symbol = tokenizer.convert_tokens_to_ids("<eos>")
     val_loader, valid_sampler = dataset.get_data_loaders(train=False, lazy=args.lazy)
-    fw = open("log_torque.txt", 'w')
+    fw = open("log_quoref_preds.txt", 'w')
     for i, batch in enumerate(val_loader):
         if torch.cuda.is_available():
             batch = [b.to(torch.device("cuda")) for b in batch[:-1]] + [batch[-1]]
@@ -83,7 +83,6 @@ def inference_baseline():
             else:
                 out_end_len = -1 
             output_masked = output[:out_end_len]
-            #output_masked = output[:len(input_masked)]
             pred = tokenizer.decode(output_masked, skip_special_tokens=True, clean_up_tokenization_spaces=True).lower().strip()
             gold = tokenizer.decode(input_masked, skip_special_tokens=True, clean_up_tokenization_spaces=True).lower().strip()
             predictions.append((pred, gold))
