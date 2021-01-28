@@ -2,6 +2,7 @@ import torch
 import random
 import numpy as np
 import math
+import json
 from torch import nn
 import torch.nn.functional as F
 from itertools import product
@@ -2489,11 +2490,16 @@ class ContrastiveEstimationAblation(T5ForConditionalGeneration):
         #neg_overlap_mask = (neg_labels != decoder_input_ids[:, 0, :].unsqueeze(1)) & (neg_labels != -100)
         #overlap_mask = torch.cat([decoder_attention_mask[:, 0, :].unsqueeze(1), neg_overlap_mask.long()], 1)
 
-        neg_labels = lm_labels.index_select(1, neg_indices)
-        neg_overlap_mask = (neg_labels != lm_labels[:, 0, :].unsqueeze(1)) & (neg_labels != -100)
-        neg_overlap_mask_comb = neg_overlap_mask | (neg_labels == self.eos_symbol_idx)
-        overlap_mask = torch.cat([decoder_attention_mask[:, 0, :].unsqueeze(1), neg_overlap_mask_comb.long()], 1)
-        overlap_mask[:,1:,0] = 0
+        #neg_labels = lm_labels.index_select(1, neg_indices)
+        #neg_overlap_mask = (neg_labels != lm_labels[:, 0, :].unsqueeze(1)) & (neg_labels != -100)
+        #neg_overlap_mask_comb = neg_overlap_mask | (neg_labels == self.eos_symbol_idx)
+        #overlap_mask = torch.cat([decoder_attention_mask[:, 0, :].unsqueeze(1), neg_overlap_mask_comb.long()], 1)
+        #overlap_mask[:,1:,0] = 0
+
+        #overlap_mask = (lm_labels == self.eos_symbol_idx).long()
+        neg_overlap_mask = (lm_labels[:,1:,:] == self.eos_symbol_idx).long()
+        pos_overlap_mask = decoder_attention_mask[:, 0, :].clone()
+        overlap_mask = torch.cat([pos_overlap_mask.unsqueeze(1), neg_overlap_mask.long()], 1)
 
         lm_labels_flat[lm_labels_flat == -100] = 0
         log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
@@ -2506,7 +2512,7 @@ class ContrastiveEstimationAblation(T5ForConditionalGeneration):
         logits_avg = logits_flat.view(-1, num_samples_a, ans_len).sum(-1) / \
                  (output_len.view(-1, num_samples_a) + 1)
         answer_mask = ((1 - lm_labels_flat_mask.view(-1, num_samples_a, ans_len).long()).sum(-1)> 0).long()
-        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e7)
+        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
 
         output_len_non_over = overlap_mask.sum(-1) + 1
         logits_avg_non_over_all = logits_flat.view(-1, num_samples_a, ans_len) * overlap_mask
@@ -2529,7 +2535,7 @@ class ContrastiveEstimationAblation(T5ForConditionalGeneration):
                         extra_ignore_indices[b][all_combinations[:, 0] * num_samples_a + all_combinations[:, 1]] = 0
 
         if self.loss_type == 'ce' and (output_mask.sum().item() != 1):
-            comptability_scores = logits_avg_non_over.view(batch_size, num_samples_q * num_samples_a)
+            comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
             # comptability_scores_exp = comptability_scores.exp()
             # comptability_scores = log_ll.view(batch_size, num_samples_q * num_samples_a)
             contrast_loss, contrast_logits = [], []
@@ -2539,14 +2545,195 @@ class ContrastiveEstimationAblation(T5ForConditionalGeneration):
                 ignore_mask[:, pos_indices] = 0
                 ignore_mask = ignore_mask * extra_ignore_indices
                 ignore_mask[:, pos_indices[i]] = 1
-                #ans_only_unnorm_scores_i = comptability_scores + (ignore_mask + 1e-13).log()
-                ans_only_unnorm_scores_i = comptability_scores.masked_fill(~ignore_mask.bool(), -1e7)
+                ans_only_unnorm_scores_i = comptability_scores + (ignore_mask + 1e-13).log()
+                #ans_only_unnorm_scores_i = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
                 contrast_probs_i = ans_only_unnorm_scores_i.log_softmax(-1)
                 contrast_loss.append(contrast_probs_i[:, pos_indices[i]].unsqueeze(1))
                 contrast_logits.append(contrast_probs_i)
             contrast_loss = torch.cat(contrast_loss, -1)
 
-            loss += - contrast_loss.mean()
+            loss += - contrast_loss.sum(-1).mean()
+            outputs += [loss, lm_logprobs, contrast_logits]
+
+        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
+            actual_num_a = output_mask.sum(-1)
+            ull = log_ll_flat.view(batch_size, num_samples_q*num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q*num_samples_a, ans_len), -1e7).exp()
+            log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+
+            neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
+            log_ull = log_ull * neg_overlap_mask.float()
+            log_ull = log_ull.sum(-1) / output_len_non_over.view(batch_size, -1).index_select(1, neg_indices)
+
+            loss += - log_ull.sum(-1).mean()
+
+            outputs += [loss, lm_logprobs]
+        else:
+            outputs += [loss, lm_logprobs]
+
+        return outputs
+
+
+class ContrastiveEstimationAblationv2(T5ForConditionalGeneration):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+        super().__init__(config)
+        self.supervision = supervision
+        self.ans_symbol_idx = ans_sym_id
+        self.max_answer_length = max_ans_len
+        self.tokenizer = tokenizer
+        self.loss_type = loss_type #'ull', 'ce'
+        self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+
+
+    def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
+        batch_size, num_samples, seq_len = attention_mask.size()
+
+        #p (a|q, cij)
+        input_symbols = torch.ones(batch_size*num_samples, 1).fill_(self.ans_symbol_idx).type_as(attention_mask)
+        generated_ans = [input_symbols]
+
+        for i in range(max_len):
+            ans_outputs = self.decoder(
+                input_ids=input_symbols,
+                encoder_hidden_states=encoded_hidden_states.view(-1, encoded_hidden_states.size(-2),
+                                                                 encoded_hidden_states.size(-1)),
+                encoder_attention_mask=attention_mask.view(-1, attention_mask.size(-1))
+            )
+            ans_logits = self.lm_head(ans_outputs[0] * (self.model_dim ** -0.5))
+            ans_probs = ans_logits.log_softmax(-1)
+            pred_prob, pred_symbol = ans_probs[:, -1].topk(1, -1)
+            generated_ans.append(pred_symbol)
+            input_symbols = torch.cat([input_symbols, pred_symbol], -1)
+
+        generated_ans = torch.cat(generated_ans, -1)
+        ans_probs = ans_probs.view(batch_size, num_samples, -1, ans_probs.size(-1))
+        generated_ans = generated_ans.view(batch_size, num_samples, -1)
+        return [generated_ans, ans_probs]
+
+    def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None,
+                lm_labels=None, decoder_attention_mask=None, contrast_labels=None,
+                # to avoid errors
+                encoder_outputs=None, use_cache=None, decoder_past_key_value_states=None,
+                encoded_hidden_states=None, max_len=None, generate_answer=False):
+
+        batch_size, num_samples_q, seq_len = input_ids.size()
+        _, num_samples_a, ans_len = decoder_input_ids.size()
+        input_mask = (attention_mask.sum(-1) > 0).long()
+        output_mask = (decoder_attention_mask.sum(-1) > 0).long()
+
+        encoded_outputs = self.encoder(input_ids=input_ids.view(-1, input_ids.size(-1)),
+                                       attention_mask=attention_mask.view(-1, attention_mask.size(-1)))
+
+        encoded_states = encoded_outputs[0]
+        encoded_states_rep = encoded_states.unsqueeze(2).repeat(1, 1, num_samples_a, 1, 1)
+        encoded_states_rep = encoded_states_rep.view(batch_size, num_samples_q, num_samples_a, seq_len, -1)
+        attention_mask_rep = attention_mask.unsqueeze(2).repeat(1, 1, num_samples_a, 1)
+        attention_mask_rep = attention_mask_rep.view(batch_size, num_samples_q, num_samples_a, seq_len)
+
+        outputs = []
+        if generate_answer:
+            generated_out = self.generate(attention_mask=attention_mask, max_len=max_len,
+                                          encoded_hidden_states=encoded_states)
+            outputs.extend(generated_out)
+
+        decoder_input_ids_rep = decoder_input_ids.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_attention_mask_rep = decoder_attention_mask.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        lm_labels_rep = lm_labels.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_input_ids_rep[decoder_input_ids_rep == -100] = 0
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids_rep.view(-1, decoder_input_ids.size(-1)),
+            attention_mask=decoder_attention_mask_rep.view(-1, decoder_attention_mask.size(-1)),
+            encoder_hidden_states=encoded_states_rep.view(-1, seq_len, encoded_states.size(-1)),
+            encoder_attention_mask=attention_mask_rep.view(-1, seq_len)
+        )
+
+        sequence_output = decoder_outputs[0]
+        sequence_output = sequence_output.view(batch_size, -1, ans_len, sequence_output.size(-1))
+        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        lm_logits = self.lm_head(sequence_output)
+        lm_logprobs = lm_logits.log_softmax(-1)
+        lm_labels_flat = lm_labels_rep.view(-1)
+        lm_label_mask = (lm_labels_rep == -100).bool()
+        lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
+        lm_labels_flat_mask = lm_label_mask.view(-1)
+
+        extra_ignore_indices = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
+        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
+        pos_indices = pos_indices * num_samples_a + pos_indices
+        neg_indices = list(range(0, num_samples_a * num_samples_q))
+        for el in pos_indices.tolist() + (extra_ignore_indices[0] == 0).nonzero().squeeze(-1).tolist():
+            neg_indices.remove(el)
+        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
+
+        overlap_mask = (lm_labels_rep == self.eos_symbol_idx).long()
+        # neg_overlap_mask = (lm_labels[:, 1:, :] == self.eos_symbol_idx).long()
+        # pos_overlap_mask = decoder_attention_mask[:, 0, :].clone()
+        # overlap_mask = torch.cat([pos_overlap_mask.unsqueeze(1), neg_overlap_mask.long()], 1).unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+
+        lm_labels_flat[lm_labels_flat == -100] = 0
+        log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        logits_flat = torch.gather(lm_logits.view(-1, lm_logprobs.size(-1)), -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
+        logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
+        output_len = decoder_attention_mask_rep.sum(-1)
+        log_ll = log_ll_flat.view(-1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(-1, num_samples_a) + 1)
+        logits_avg = logits_flat.view(-1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(-1, num_samples_a) + 1)
+
+        answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
+        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
+        pos_answer_mask = torch.zeros(batch_size, num_samples_a * num_samples_q).type_as(input_ids)
+        pos_answer_mask[:, pos_indices] = 1
+        pos_answer_mask = pos_answer_mask.view(batch_size, num_samples_q, num_samples_a)
+        comb_answer_mask = (answer_mask * pos_answer_mask).bool()
+        log_pll = log_ll.masked_select(comb_answer_mask)
+        loss = - log_pll.sum()
+
+       # answer_mask = ((1 - lm_labels_flat_mask.view(-1, num_samples_a, ans_len).long()).sum(-1) > 0).long()
+       # logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
+
+       # output_len_non_over = overlap_mask.sum(-1) + 1
+       # logits_avg_non_over_all = logits_flat.view(-1, num_samples_q, num_samples_a, ans_len) * overlap_mask
+       # logits_avg_non_over_all = logits_avg_non_over_all.view(-1, num_samples_a, ans_len)
+       # logits_avg_non_over = logits_avg_non_over_all.sum(-1) / output_len_non_over
+
+       # log_ll = log_ll.view(batch_size, num_samples_q, num_samples_a)
+
+       # log_pll = log_ll.view(batch_size, -1).index_select(1, pos_indices)
+       # loss = - log_pll.mean()
+
+        if contrast_labels is not None:
+            for b in range(batch_size):
+                for k in range(num_samples_q):
+                    indices = (contrast_labels[b] == k).nonzero().squeeze(-1).tolist()
+                    all_combinations = list(product(indices, indices))
+                    all_combinations = torch.tensor([comb for comb in all_combinations if comb[0] != comb[1]]) \
+                        .type_as(attention_mask)
+                    if len(all_combinations) > 0:
+                        extra_ignore_indices[b][all_combinations[:, 0] * num_samples_a + all_combinations[:, 1]] = 0
+        else:
+            extra_ignore_indices = (decoder_attention_mask_rep.sum(-1) > 0).view(batch_size, num_samples_q*num_samples_a)
+
+        if self.loss_type == 'ce':# and (output_mask.sum().item() != 1):
+            comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+            # comptability_scores_exp = comptability_scores.exp()
+            # comptability_scores = log_ll.view(batch_size, num_samples_q * num_samples_a)
+            contrast_loss, contrast_logits = [], []
+
+            for i in range(num_samples_q):
+                if input_mask[0][i].item() == 1:
+                    ignore_mask = torch.ones(batch_size, num_samples_q*num_samples_a).type_as(attention_mask)
+                    ignore_mask[:, pos_indices] = 0
+                    ignore_mask = ignore_mask * extra_ignore_indices
+                    ignore_mask[:, pos_indices[i]] = 1
+                    ans_only_unnorm_scores_i = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
+                    contrast_probs_i = ans_only_unnorm_scores_i.log_softmax(-1)
+                    contrast_loss.append(contrast_probs_i[:, pos_indices[i]].unsqueeze(1))
+                    contrast_logits.append(contrast_probs_i)
+            contrast_loss = torch.cat(contrast_loss, -1)
+
+            loss += - contrast_loss.sum(-1).mean()
             outputs += [loss, lm_logprobs, contrast_logits]
 
         elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
@@ -2556,6 +2743,490 @@ class ContrastiveEstimationAblation(T5ForConditionalGeneration):
             log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
 
             log_ull = log_ull * overlap_mask.float()
+            log_ull = log_ull.sum(-1) / (output_len+1).view(batch_size, -1).index_select(1, neg_indices)
+
+            loss += - log_ull.sum(-1).mean()
+
+            outputs += [loss, lm_logprobs]
+        else:
+            outputs += [loss, lm_logprobs]
+
+        return outputs
+
+
+
+class ContrastiveEstimationAblationv3(T5ForConditionalGeneration):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+        super().__init__(config)
+        self.supervision = supervision
+        self.ans_symbol_idx = ans_sym_id
+        self.max_answer_length = max_ans_len
+        self.tokenizer = tokenizer
+        self.loss_type = loss_type #'ull', 'ce'
+        self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+
+
+    def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
+        batch_size, num_samples, seq_len = attention_mask.size()
+
+        #p (a|q, cij)
+        input_symbols = torch.ones(batch_size*num_samples, 1).fill_(self.ans_symbol_idx).type_as(attention_mask)
+        generated_ans = [input_symbols]
+
+        for i in range(max_len):
+            ans_outputs = self.decoder(
+                input_ids=input_symbols,
+                encoder_hidden_states=encoded_hidden_states.view(-1, encoded_hidden_states.size(-2),
+                                                                 encoded_hidden_states.size(-1)),
+                encoder_attention_mask=attention_mask.view(-1, attention_mask.size(-1))
+            )
+            ans_logits = self.lm_head(ans_outputs[0] * (self.model_dim ** -0.5))
+            ans_probs = ans_logits.log_softmax(-1)
+            pred_prob, pred_symbol = ans_probs[:, -1].topk(1, -1)
+            generated_ans.append(pred_symbol)
+            input_symbols = torch.cat([input_symbols, pred_symbol], -1)
+
+        generated_ans = torch.cat(generated_ans, -1)
+        ans_probs = ans_probs.view(batch_size, num_samples, -1, ans_probs.size(-1))
+        generated_ans = generated_ans.view(batch_size, num_samples, -1)
+        return [generated_ans, ans_probs]
+
+    def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None,
+                lm_labels=None, decoder_attention_mask=None, contrast_labels=None,
+                # to avoid errors
+                encoder_outputs=None, use_cache=None, decoder_past_key_value_states=None,
+                encoded_hidden_states=None, max_len=None, generate_answer=False):
+
+        batch_size, num_samples_q, seq_len = input_ids.size()
+        _, num_samples_a, ans_len = decoder_input_ids.size()
+        input_mask = (attention_mask.sum(-1) > 0).long()
+        output_mask = (decoder_attention_mask.sum(-1) > 0).long()
+
+        encoded_outputs = self.encoder(input_ids=input_ids.view(-1, input_ids.size(-1)),
+                                       attention_mask=attention_mask.view(-1, attention_mask.size(-1)))
+
+        encoded_states = encoded_outputs[0]
+        encoded_states_rep = encoded_states.unsqueeze(2).repeat(1, 1, num_samples_a, 1, 1)
+        encoded_states_rep = encoded_states_rep.view(batch_size, num_samples_q, num_samples_a, seq_len, -1)
+        attention_mask_rep = attention_mask.unsqueeze(2).repeat(1, 1, num_samples_a, 1)
+        attention_mask_rep = attention_mask_rep.view(batch_size, num_samples_q, num_samples_a, seq_len)
+
+        outputs = []
+        if generate_answer:
+            generated_out = self.generate(attention_mask=attention_mask, max_len=max_len,
+                                          encoded_hidden_states=encoded_states)
+            outputs.extend(generated_out)
+
+        decoder_input_ids_rep = decoder_input_ids.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_attention_mask_rep = decoder_attention_mask.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        lm_labels_rep = lm_labels.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_input_ids_rep[decoder_input_ids_rep == -100] = 0
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids_rep.view(-1, decoder_input_ids.size(-1)),
+            attention_mask=decoder_attention_mask_rep.view(-1, decoder_attention_mask.size(-1)),
+            encoder_hidden_states=encoded_states_rep.view(-1, seq_len, encoded_states.size(-1)),
+            encoder_attention_mask=attention_mask_rep.view(-1, seq_len)
+        )
+
+        sequence_output = decoder_outputs[0]
+        sequence_output = sequence_output.view(batch_size, -1, ans_len, sequence_output.size(-1))
+        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        lm_logits = self.lm_head(sequence_output)
+        lm_logprobs = lm_logits.log_softmax(-1)
+        lm_labels_flat = lm_labels_rep.view(-1)
+        lm_label_mask = (lm_labels_rep == -100).bool()
+        lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
+        lm_labels_flat_mask = lm_label_mask.view(-1)
+
+        extra_ignore_indices = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
+        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
+        pos_indices = pos_indices * num_samples_a + pos_indices
+        neg_indices = list(range(0, num_samples_a * num_samples_q))
+        for el in pos_indices.tolist() + (extra_ignore_indices[0] == 0).nonzero().squeeze(-1).tolist():
+            neg_indices.remove(el)
+        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
+
+        overlap_mask = (lm_labels_rep == self.eos_symbol_idx).long()
+
+        lm_labels_flat[lm_labels_flat == -100] = 0
+        log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        logits_flat = torch.gather(lm_logits.view(-1, lm_logprobs.size(-1)), -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
+        logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
+        output_len = decoder_attention_mask_rep.sum(-1)
+        log_ll = log_ll_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
+        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
+        pos_answer_mask = torch.zeros(batch_size, num_samples_a * num_samples_q).type_as(input_ids)
+        pos_answer_mask[:, pos_indices] = 1
+        pos_answer_mask = pos_answer_mask.view(batch_size, num_samples_q, num_samples_a)
+        comb_answer_mask = (answer_mask * pos_answer_mask).bool()
+        log_pll = log_ll.masked_select(comb_answer_mask)
+        loss = - log_pll.sum()
+
+        if contrast_labels is not None:
+            for b in range(batch_size):
+                for k in range(num_samples_q):
+                    indices = (contrast_labels[b] == k).nonzero().squeeze(-1).tolist()
+                    all_combinations = list(product(indices, indices))
+                    all_combinations = torch.tensor([comb for comb in all_combinations if comb[0] != comb[1]]) \
+                        .type_as(attention_mask)
+                    if len(all_combinations) > 0:
+                        extra_ignore_indices[b][all_combinations[:, 0] * num_samples_a + all_combinations[:, 1]] = 0
+        else:
+            extra_ignore_indices = (decoder_attention_mask_rep.sum(-1) > 0).view(batch_size, num_samples_q*num_samples_a)
+
+        if self.loss_type == 'ce':# and (output_mask.sum().item() != 1):
+            comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+            contrast_loss, contrast_logits = [], []
+
+            ignore_mask = extra_ignore_indices
+            ans_only_unnorm_scores_i = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
+            contrast_probs_i = ans_only_unnorm_scores_i.log_softmax(-1)
+            contrast_loss = contrast_probs_i.masked_select(comb_answer_mask.view(batch_size, -1))
+
+            loss += - contrast_loss.sum(-1).mean()
+            outputs += [loss, lm_logprobs, contrast_logits]
+
+        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
+            actual_num_a = output_mask.sum(-1)
+            ull = log_ll_flat.view(batch_size, num_samples_q*num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q*num_samples_a, ans_len), -1e7).exp()
+            log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+            # neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
+            # log_ull = log_ull * neg_overlap_mask.float()
+            log_ull = log_ull.sum(-1) / (output_len+1).view(batch_size, -1).index_select(1, neg_indices)
+
+            loss += - log_ull.sum(-1).mean()
+
+            outputs += [loss, lm_logprobs]
+        else:
+            outputs += [loss, lm_logprobs]
+
+        return outputs
+
+
+# question conditional
+class ContrastiveEstimationAblationv5(T5ForConditionalGeneration):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+        super().__init__(config)
+        self.supervision = supervision
+        self.ans_symbol_idx = ans_sym_id
+        self.max_answer_length = max_ans_len
+        self.tokenizer = tokenizer
+        self.loss_type = loss_type #'ull', 'ce'
+        self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+
+
+    def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
+        batch_size, num_samples, seq_len = attention_mask.size()
+
+        #p (a|q, cij)
+        input_symbols = torch.ones(batch_size*num_samples, 1).fill_(self.ans_symbol_idx).type_as(attention_mask)
+        generated_ans = [input_symbols]
+
+        for i in range(max_len):
+            ans_outputs = self.decoder(
+                input_ids=input_symbols,
+                encoder_hidden_states=encoded_hidden_states.view(-1, encoded_hidden_states.size(-2),
+                                                                 encoded_hidden_states.size(-1)),
+                encoder_attention_mask=attention_mask.view(-1, attention_mask.size(-1))
+            )
+            ans_logits = self.lm_head(ans_outputs[0] * (self.model_dim ** -0.5))
+            ans_probs = ans_logits.log_softmax(-1)
+            pred_prob, pred_symbol = ans_probs[:, -1].topk(1, -1)
+            generated_ans.append(pred_symbol)
+            input_symbols = torch.cat([input_symbols, pred_symbol], -1)
+
+        generated_ans = torch.cat(generated_ans, -1)
+        ans_probs = ans_probs.view(batch_size, num_samples, -1, ans_probs.size(-1))
+        generated_ans = generated_ans.view(batch_size, num_samples, -1)
+        return [generated_ans, ans_probs]
+
+    def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None,
+                lm_labels=None, decoder_attention_mask=None, contrast_labels=None,
+                # to avoid errors
+                encoder_outputs=None, use_cache=None, decoder_past_key_value_states=None,
+                encoded_hidden_states=None, max_len=None, generate_answer=False):
+
+        batch_size, num_samples_q, seq_len = input_ids.size()
+        _, num_samples_a, ans_len = decoder_input_ids.size()
+        input_mask = (attention_mask.sum(-1) > 0).long()
+        output_mask = (decoder_attention_mask.sum(-1) > 0).long()
+
+        encoded_outputs = self.encoder(input_ids=input_ids.view(-1, input_ids.size(-1)),
+                                       attention_mask=attention_mask.view(-1, attention_mask.size(-1)))
+
+        encoded_states = encoded_outputs[0]
+        encoded_states_rep = encoded_states.unsqueeze(2).repeat(1, 1, num_samples_a, 1, 1)
+        encoded_states_rep = encoded_states_rep.view(batch_size, num_samples_q, num_samples_a, seq_len, -1)
+        attention_mask_rep = attention_mask.unsqueeze(2).repeat(1, 1, num_samples_a, 1)
+        attention_mask_rep = attention_mask_rep.view(batch_size, num_samples_q, num_samples_a, seq_len)
+
+        outputs = []
+        if generate_answer:
+            generated_out = self.generate(attention_mask=attention_mask, max_len=max_len,
+                                          encoded_hidden_states=encoded_states)
+            outputs.extend(generated_out)
+
+        decoder_input_ids_rep = decoder_input_ids.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_attention_mask_rep = decoder_attention_mask.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        lm_labels_rep = lm_labels.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_input_ids_rep[decoder_input_ids_rep == -100] = 0
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids_rep.view(-1, decoder_input_ids.size(-1)),
+            attention_mask=decoder_attention_mask_rep.view(-1, decoder_attention_mask.size(-1)),
+            encoder_hidden_states=encoded_states_rep.view(-1, seq_len, encoded_states.size(-1)),
+            encoder_attention_mask=attention_mask_rep.view(-1, seq_len)
+        )
+
+        sequence_output = decoder_outputs[0]
+        sequence_output = sequence_output.view(batch_size, -1, ans_len, sequence_output.size(-1))
+        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        lm_logits = self.lm_head(sequence_output)
+        lm_logprobs = lm_logits.log_softmax(-1)
+        lm_labels_flat = lm_labels_rep.view(-1)
+        lm_label_mask = (lm_labels_rep == -100).bool()
+        lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
+        lm_labels_flat_mask = lm_label_mask.view(-1)
+
+        overlap_mask = (lm_labels_rep == self.eos_symbol_idx).long()
+        pos_indices = torch.zeros(1).type_as(input_ids)
+        neg_indices = torch.ones(num_samples_q-1).type_as(input_ids)
+
+        lm_labels_flat[lm_labels_flat == -100] = 0
+        log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        logits_flat = torch.gather(lm_logits.view(-1, lm_logprobs.size(-1)), -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
+        logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
+        output_len = decoder_attention_mask_rep.sum(-1)
+        log_ll = log_ll_flat.view(-1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(-1, num_samples_a) + 1)
+        logits_avg = logits_flat.view(-1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(-1, num_samples_a) + 1)
+        answer_mask = ((1 - lm_labels_flat_mask.view(-1, num_samples_a, ans_len).long()).sum(-1) > 0).long()
+        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
+
+        #output_len_non_over = overlap_mask.sum(-1) + 1
+        #logits_avg_non_over_all = logits_flat.view(-1, num_samples_q, num_samples_a, ans_len) * overlap_mask
+        #logits_avg_non_over_all = logits_avg_non_over_all.view(-1, num_samples_a, ans_len)
+        #logits_avg_non_over = logits_avg_non_over_all.sum(-1) / output_len_non_over
+
+        log_ll = log_ll.view(batch_size, num_samples_q, num_samples_a)
+
+        log_pll = log_ll.view(batch_size, -1).index_select(1, pos_indices)
+        loss = - log_pll.mean()
+
+        if contrast_labels is not None:
+            for b in range(batch_size):
+                for k in range(num_samples_q):
+                    indices = (contrast_labels[b] == k).nonzero().squeeze(-1).tolist()
+                    all_combinations = list(product(indices, indices))
+                    all_combinations = torch.tensor([comb for comb in all_combinations if comb[0] != comb[1]]) \
+                        .type_as(attention_mask)
+                    if len(all_combinations) > 0:
+                        extra_ignore_indices[b][all_combinations[:, 0] * num_samples_a + all_combinations[:, 1]] = 0
+        else:
+            # extra_ignore_indices = (decoder_attention_mask_rep.sum(-1) > 0).view(batch_size, num_samples_q*num_samples_a)
+            extra_ignore_indices = (input_ids.sum(-1) > 0).unsqueeze(-1).repeat(1, 1, num_samples_a).\
+                view(batch_size, num_samples_q*num_samples_a).long()
+
+        if self.loss_type == 'ce':
+            comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+            contrast_loss, contrast_logits = [], []
+
+            for i in range(num_samples_a):
+                if input_mask[0][i].item() == 1:
+                    ignore_mask = torch.zeros(batch_size, num_samples_q, num_samples_a).type_as(attention_mask)
+                    ignore_mask[:, :, i] = 1
+                    ignore_mask = ignore_mask.view(batch_size, num_samples_q * num_samples_a) * extra_ignore_indices
+                    ans_only_unnorm_scores = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
+                    contrast_probs = ans_only_unnorm_scores.log_softmax(-1)
+                    contrast_loss.append(contrast_probs[:, pos_indices[i]].unsqueeze(1))
+
+            contrast_loss = torch.cat(contrast_loss, -1)
+
+            loss += - contrast_loss.sum(-1).mean()
+            outputs += [loss, lm_logprobs, contrast_logits]
+
+        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
+            actual_num_a = output_mask.sum(-1)
+            ull = log_ll_flat.view(batch_size, num_samples_q*num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q*num_samples_a, ans_len), -1e7).exp()
+            log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+            # neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
+            # log_ull = log_ull * neg_overlap_mask.float()
+            log_ull = log_ull.sum(-1) / (output_len+1).view(batch_size, -1).index_select(1, neg_indices)
+
+            loss += - log_ull.sum(-1).mean()
+
+            outputs += [loss, lm_logprobs]
+        else:
+            outputs += [loss, lm_logprobs]
+
+        return outputs
+
+
+# answer conditional
+class ContrastiveEstimationAblationv6(T5ForConditionalGeneration):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+        super().__init__(config)
+        self.supervision = supervision
+        self.ans_symbol_idx = ans_sym_id
+        self.max_answer_length = max_ans_len
+        self.tokenizer = tokenizer
+        self.loss_type = loss_type #'ull', 'ce'
+        self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+
+
+    def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
+        batch_size, num_samples, seq_len = attention_mask.size()
+
+        #p (a|q, cij)
+        input_symbols = torch.ones(batch_size*num_samples, 1).fill_(self.ans_symbol_idx).type_as(attention_mask)
+        generated_ans = [input_symbols]
+
+        for i in range(max_len):
+            ans_outputs = self.decoder(
+                input_ids=input_symbols,
+                encoder_hidden_states=encoded_hidden_states.view(-1, encoded_hidden_states.size(-2),
+                                                                 encoded_hidden_states.size(-1)),
+                encoder_attention_mask=attention_mask.view(-1, attention_mask.size(-1))
+            )
+            ans_logits = self.lm_head(ans_outputs[0] * (self.model_dim ** -0.5))
+            ans_probs = ans_logits.log_softmax(-1)
+            pred_prob, pred_symbol = ans_probs[:, -1].topk(1, -1)
+            generated_ans.append(pred_symbol)
+            input_symbols = torch.cat([input_symbols, pred_symbol], -1)
+
+        generated_ans = torch.cat(generated_ans, -1)
+        ans_probs = ans_probs.view(batch_size, num_samples, -1, ans_probs.size(-1))
+        generated_ans = generated_ans.view(batch_size, num_samples, -1)
+        return [generated_ans, ans_probs]
+
+    def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None,
+                lm_labels=None, decoder_attention_mask=None, contrast_labels=None,
+                # to avoid errors
+                encoder_outputs=None, use_cache=None, decoder_past_key_value_states=None,
+                encoded_hidden_states=None, max_len=None, generate_answer=False):
+
+        batch_size, num_samples_q, seq_len = input_ids.size()
+        _, num_samples_a, ans_len = decoder_input_ids.size()
+        input_mask = (attention_mask.sum(-1) > 0).long()
+        output_mask = (decoder_attention_mask.sum(-1) > 0).long()
+
+        encoded_outputs = self.encoder(input_ids=input_ids.view(-1, input_ids.size(-1)),
+                                       attention_mask=attention_mask.view(-1, attention_mask.size(-1)))
+
+        encoded_states = encoded_outputs[0]
+        encoded_states_rep = encoded_states.unsqueeze(2).repeat(1, 1, num_samples_a, 1, 1)
+        encoded_states_rep = encoded_states_rep.view(batch_size, num_samples_q, num_samples_a, seq_len, -1)
+        attention_mask_rep = attention_mask.unsqueeze(2).repeat(1, 1, num_samples_a, 1)
+        attention_mask_rep = attention_mask_rep.view(batch_size, num_samples_q, num_samples_a, seq_len)
+
+        outputs = []
+        if generate_answer:
+            generated_out = self.generate(attention_mask=attention_mask, max_len=max_len,
+                                          encoded_hidden_states=encoded_states)
+            outputs.extend(generated_out)
+
+        decoder_input_ids_rep = decoder_input_ids.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_attention_mask_rep = decoder_attention_mask.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        lm_labels_rep = lm_labels.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_input_ids_rep[decoder_input_ids_rep == -100] = 0
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids_rep.view(-1, decoder_input_ids.size(-1)),
+            attention_mask=decoder_attention_mask_rep.view(-1, decoder_attention_mask.size(-1)),
+            encoder_hidden_states=encoded_states_rep.view(-1, seq_len, encoded_states.size(-1)),
+            encoder_attention_mask=attention_mask_rep.view(-1, seq_len)
+        )
+
+        sequence_output = decoder_outputs[0]
+        sequence_output = sequence_output.view(batch_size, -1, ans_len, sequence_output.size(-1))
+        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        lm_logits = self.lm_head(sequence_output)
+        lm_logprobs = lm_logits.log_softmax(-1)
+        lm_labels_flat = lm_labels_rep.view(-1)
+        lm_label_mask = (lm_labels_rep == -100).bool()
+        lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
+        lm_labels_flat_mask = lm_label_mask.view(-1)
+
+        extra_ignore_indices = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
+        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
+        pos_indices = pos_indices * num_samples_a + pos_indices
+        neg_indices = list(range(0, num_samples_a * num_samples_q))
+        for el in pos_indices.tolist() + (extra_ignore_indices[0] == 0).nonzero().squeeze(-1).tolist():
+            neg_indices.remove(el)
+        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
+
+        overlap_mask = (lm_labels_rep == self.eos_symbol_idx).long()
+
+        lm_labels_flat[lm_labels_flat == -100] = 0
+        log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        logits_flat = torch.gather(lm_logits.view(-1, lm_logprobs.size(-1)), -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
+        logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
+        output_len = decoder_attention_mask_rep.sum(-1)
+        log_ll = log_ll_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
+        #answer_mask = ((1 - lm_labels_flat_mask.view(-1, num_samples_a, ans_len).long()).sum(-1) > 0).long()
+        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
+
+        output_len_non_over = overlap_mask.sum(-1) + 1
+        logits_avg_non_over_all = logits_flat.view(-1, num_samples_q, num_samples_a, ans_len) * overlap_mask
+        logits_avg_non_over_all = logits_avg_non_over_all.view(-1, num_samples_a, ans_len)
+        logits_avg_non_over = logits_avg_non_over_all.sum(-1) / output_len_non_over
+
+        log_ll = log_ll.view(batch_size, num_samples_q, num_samples_a)
+
+        log_pll = log_ll.view(batch_size, -1).index_select(1, pos_indices)
+        loss = - log_pll.mean()
+
+        if contrast_labels is not None:
+            for b in range(batch_size):
+                for k in range(num_samples_q):
+                    indices = (contrast_labels[b] == k).nonzero().squeeze(-1).tolist()
+                    all_combinations = list(product(indices, indices))
+                    all_combinations = torch.tensor([comb for comb in all_combinations if comb[0] != comb[1]]) \
+                        .type_as(attention_mask)
+                    if len(all_combinations) > 0:
+                        extra_ignore_indices[b][all_combinations[:, 0] * num_samples_a + all_combinations[:, 1]] = 0
+        else:
+            # extra_ignore_indices = (decoder_attention_mask_rep.sum(-1) > 0).view(batch_size, num_samples_q*num_samples_a)
+            extra_ignore_indices = (input_ids.sum(-1) > 0).unsqueeze(-1).repeat(1, 1, num_samples_a).\
+                view(batch_size, num_samples_q*num_samples_a).long()
+
+        if self.loss_type == 'ce':
+            comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+            contrast_loss, contrast_logits = [], []
+
+            for i in range(num_samples_q):
+                if input_mask[0][i].item() == 1:
+                    ignore_mask = torch.zeros(batch_size, num_samples_q, num_samples_a).type_as(attention_mask)
+                    ignore_mask[:, i, :] = 1
+                    ignore_mask = ignore_mask.view(batch_size, num_samples_q * num_samples_a) * extra_ignore_indices
+                    ans_only_unnorm_scores = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
+                    contrast_probs = ans_only_unnorm_scores.log_softmax(-1)
+                    contrast_loss.append(contrast_probs[:, pos_indices[i]].unsqueeze(1))
+
+            contrast_loss = torch.cat(contrast_loss, -1)
+
+            loss += - contrast_loss.sum(-1).mean()
+            outputs += [loss, lm_logprobs, contrast_logits]
+
+        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
+            actual_num_a = output_mask.sum(-1)
+            ull = log_ll_flat.view(batch_size, num_samples_q*num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q*num_samples_a, ans_len), -1e7).exp()
+            log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+            # neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
+            # log_ull = log_ull * neg_overlap_mask.float()
             log_ull = log_ull.sum(-1) / (output_len+1).view(batch_size, -1).index_select(1, neg_indices)
 
             loss += - log_ull.sum(-1).mean()
@@ -2758,6 +3429,7 @@ class ContrastiveEstimationAblationDynamic(T5ForConditionalGeneration):
         self.tokenizer = tokenizer
         self.loss_type = loss_type #'ull', 'ce'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+        self.include_samples = False
 
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
@@ -2909,7 +3581,6 @@ class ContrastiveEstimationAblationDynamic(T5ForConditionalGeneration):
         batch_size, num_samples_q, seq_len = input_ids.size()
         _, _, ans_len = decoder_input_ids.size()
         input_mask = (attention_mask.sum(-1) > 0).long()
-        output_mask = (decoder_attention_mask.sum(-1) > 0).long()
 
         encoded_outputs = self.encoder(input_ids=input_ids.view(-1, input_ids.size(-1)),
                                        attention_mask=attention_mask.view(-1, attention_mask.size(-1)))
@@ -2923,12 +3594,17 @@ class ContrastiveEstimationAblationDynamic(T5ForConditionalGeneration):
             outputs.extend(generated_out)
 
         if prev_model:
-            results = prev_model.module.sample_negative_sequences(input_ids, attention_mask, decoder_input_ids, decoder_attention_mask)
+            results = prev_model.module.sample_negative_sequences(input_ids, attention_mask, decoder_input_ids, decoder_attention_mask, num_samples=1)
             #results = prev_model.sample_negative_sequences(input_ids, attention_mask, decoder_input_ids, decoder_attention_mask)
         else:
             results = self.sample_negative_sequences(input_ids, attention_mask, decoder_input_ids, decoder_attention_mask, num_samples=1)
 
-        if results is not None:
+        if not self.include_samples:
+            num_samples_a = 2
+            candidates_input_ids = decoder_input_ids
+            candidates_labels = lm_labels
+            candidates_attention_mask = decoder_attention_mask
+        elif results is not None:
             neg_answer_inputs, neg_answer_outputs, negative_attention = results
             num_samples_a = neg_answer_inputs.size(1) + 1 + 1
            # candidates_input_ids = torch.cat([decoder_input_ids[:, 0, :].unsqueeze(1), neg_answer_inputs], 1)
@@ -2956,6 +3632,8 @@ class ContrastiveEstimationAblationDynamic(T5ForConditionalGeneration):
         decoder_input_ids_rep = candidates_input_ids.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
         decoder_attention_mask_rep = candidates_attention_mask.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
         lm_labels_rep = candidates_labels.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+
+        output_mask = (decoder_attention_mask_rep.sum(-1) > 0).long()
 
         decoder_input_ids_rep[decoder_input_ids_rep == -100] = 0
         decoder_outputs = self.decoder(
@@ -2997,6 +3675,9 @@ class ContrastiveEstimationAblationDynamic(T5ForConditionalGeneration):
         #overlap_mask = torch.cat([decoder_attention_mask[:, 0, :].unsqueeze(1), neg_overlap_mask.long()], 1)
 
         overlap_mask = (candidates_labels == self.eos_symbol_idx).long()
+        #neg_overlap_mask = (candidates_labels[:,1:,:] == self.eos_symbol_idx).long())
+        #pos_overlap_mask = decoder_attention_mask[:, 0, :].clone()
+        #overlap_mask = torch.cat([pos_overlap_mask.unsqueeze(1), neg_overlap_mask.long()], 1)
 
         lm_labels_flat[lm_labels_flat == -100] = 0
         log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
@@ -3004,17 +3685,18 @@ class ContrastiveEstimationAblationDynamic(T5ForConditionalGeneration):
         log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
         logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
         output_len = decoder_attention_mask_rep.sum(-1)
-        log_ll = log_ll_flat.view(-1, num_samples_a, ans_len).sum(-1) / \
-                 (output_len.view(-1, num_samples_a) + 1)
 
-        logits_avg = logits_flat.view(-1, num_samples_a, ans_len).sum(-1) / \
-                 (output_len.view(-1, num_samples_a) + 1)
-        answer_mask = ((1 - lm_labels_flat_mask.view(-1, num_samples_a, ans_len).long()).sum(-1)> 0).long()
-        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e7)
+        log_ll = log_ll_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+
+        logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        answer_mask = input_mask.unsqueeze(-1) * output_mask
+        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
 
         output_len_non_over = overlap_mask.sum(-1) + 1
-        logits_avg_non_over = logits_flat.view(-1, num_samples_a, ans_len) * overlap_mask
-        logits_avg_non_over = logits_avg_non_over.sum(-1) / output_len_non_over
+        logits_avg_non_over = logits_flat.view(batch_size, -1, num_samples_a, ans_len) * overlap_mask.unsqueeze(1)
+        logits_avg_non_over = logits_avg_non_over.sum(-1) / output_len_non_over.unsqueeze(1)
 
         log_ll = log_ll.view(batch_size, num_samples_q, num_samples_a)
         log_pll = log_ll.view(batch_size, -1).index_select(1, pos_indices)
@@ -3036,8 +3718,6 @@ class ContrastiveEstimationAblationDynamic(T5ForConditionalGeneration):
 
         if self.loss_type == 'ce' and (output_mask.sum().item() != 1) and results is not None:
             comptability_scores = logits_avg_non_over.view(batch_size, num_samples_q * num_samples_a)
-            # comptability_scores_exp = comptability_scores.exp()
-            # comptability_scores = log_ll.view(batch_size, num_samples_q * num_samples_a)
             contrast_loss, contrast_logits = [], []
 
             for i in range(num_samples_q):
@@ -3055,10 +3735,372 @@ class ContrastiveEstimationAblationDynamic(T5ForConditionalGeneration):
             loss += - contrast_loss.mean()
             outputs += [loss, lm_logprobs, contrast_logits]
 
+        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
+            actual_num_a = output_mask.sum(-1)
+            neg_indices = list(range(0, num_samples_a * num_samples_q))
+            for el in pos_indices.tolist() + (extra_ignore_indices[0] == 0).nonzero().squeeze(-1).tolist():
+                neg_indices.remove(el)
+
+            neg_indices = torch.tensor(neg_indices).type_as(input_ids)
+            ull = log_ll_flat.view(batch_size, num_samples_q * num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q * num_samples_a, ans_len), -1e7).exp()
+            log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+            neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
+            log_ull = log_ull * neg_overlap_mask.float()
+            log_ull = log_ull.sum(-1) / output_len_non_over.view(batch_size, -1).index_select(1, neg_indices)
+
+            loss += - log_ull.sum(-1).mean()
+
+            outputs += [loss, lm_logprobs]
         else:
             outputs += [loss, lm_logprobs]
 
         return outputs
+
+
+#multilabel
+class ContrastiveEstimationAblationv4(T5ForConditionalGeneration):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+        super().__init__(config)
+        self.supervision = supervision
+        self.ans_symbol_idx = ans_sym_id
+        self.max_answer_length = max_ans_len
+        self.tokenizer = tokenizer
+        self.loss_type = loss_type #'ull', 'ce'
+        self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+
+
+    def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
+        batch_size, num_samples, seq_len = attention_mask.size()
+
+        #p (a|q, cij)
+        input_symbols = torch.ones(batch_size*num_samples, 1).fill_(self.ans_symbol_idx).type_as(attention_mask)
+        generated_ans = [input_symbols]
+
+        for i in range(max_len):
+            ans_outputs = self.decoder(
+                input_ids=input_symbols,
+                encoder_hidden_states=encoded_hidden_states.view(-1, encoded_hidden_states.size(-2),
+                                                                 encoded_hidden_states.size(-1)),
+                encoder_attention_mask=attention_mask.view(-1, attention_mask.size(-1))
+            )
+            ans_logits = self.lm_head(ans_outputs[0] * (self.model_dim ** -0.5))
+            ans_probs = ans_logits.log_softmax(-1)
+            pred_prob, pred_symbol = ans_probs[:, -1].topk(1, -1)
+            generated_ans.append(pred_symbol)
+            input_symbols = torch.cat([input_symbols, pred_symbol], -1)
+
+        generated_ans = torch.cat(generated_ans, -1)
+        ans_probs = ans_probs.view(batch_size, num_samples, -1, ans_probs.size(-1))
+        generated_ans = generated_ans.view(batch_size, num_samples, -1)
+        return [generated_ans, ans_probs]
+
+    def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None,
+                lm_labels=None, decoder_attention_mask=None, contrast_labels=None,
+                # to avoid errors
+                encoder_outputs=None, use_cache=None, decoder_past_key_value_states=None,
+                encoded_hidden_states=None, max_len=None, generate_answer=False):
+
+        batch_size, num_samples_q, seq_len = input_ids.size()
+        _, num_samples_a, ans_len = decoder_input_ids.size()
+        input_mask = (attention_mask.sum(-1) > 0).long()
+        output_mask = (decoder_attention_mask.sum(-1) > 0).long()
+
+        encoded_outputs = self.encoder(input_ids=input_ids.view(-1, input_ids.size(-1)),
+                                       attention_mask=attention_mask.view(-1, attention_mask.size(-1)))
+
+        encoded_states = encoded_outputs[0]
+        encoded_states_rep = encoded_states.unsqueeze(2).repeat(1, 1, num_samples_a, 1, 1)
+        encoded_states_rep = encoded_states_rep.view(batch_size, num_samples_q, num_samples_a, seq_len, -1)
+        attention_mask_rep = attention_mask.unsqueeze(2).repeat(1, 1, num_samples_a, 1)
+        attention_mask_rep = attention_mask_rep.view(batch_size, num_samples_q, num_samples_a, seq_len)
+
+        outputs = []
+        if generate_answer:
+            generated_out = self.generate(attention_mask=attention_mask, max_len=max_len,
+                                          encoded_hidden_states=encoded_states)
+            outputs.extend(generated_out)
+
+        decoder_input_ids_rep = decoder_input_ids.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_attention_mask_rep = decoder_attention_mask.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        lm_labels_rep = lm_labels.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_input_ids_rep[decoder_input_ids_rep == -100] = 0
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids_rep.view(-1, decoder_input_ids.size(-1)),
+            attention_mask=decoder_attention_mask_rep.view(-1, decoder_attention_mask.size(-1)),
+            encoder_hidden_states=encoded_states_rep.view(-1, seq_len, encoded_states.size(-1)),
+            encoder_attention_mask=attention_mask_rep.view(-1, seq_len)
+        )
+
+        sequence_output = decoder_outputs[0]
+        sequence_output = sequence_output.view(batch_size, -1, ans_len, sequence_output.size(-1))
+        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        lm_logits = self.lm_head(sequence_output)
+        lm_logprobs = lm_logits.log_softmax(-1)
+        lm_labels_flat = lm_labels_rep.view(-1)
+        lm_label_mask = (lm_labels_rep == -100).bool()
+        lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
+        lm_labels_flat_mask = lm_label_mask.view(-1)
+
+        extra_ignore_indices = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
+        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
+        pos_indices = pos_indices * num_samples_a + pos_indices
+        neg_indices = list(range(0, num_samples_a * num_samples_q))
+        for el in pos_indices.tolist() + (extra_ignore_indices[0] == 0).nonzero().squeeze(-1).tolist():
+            neg_indices.remove(el)
+        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
+
+        overlap_mask = (lm_labels_rep == self.eos_symbol_idx).long()
+
+        lm_labels_flat[lm_labels_flat == -100] = 0
+        log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        logits_flat = torch.gather(lm_logits.view(-1, lm_logprobs.size(-1)), -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
+        logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
+        output_len = decoder_attention_mask_rep.sum(-1)
+        log_ll = log_ll_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
+        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
+        pos_answer_mask = torch.zeros(batch_size, num_samples_a*num_samples_q).type_as(input_ids)
+        pos_answer_mask[:, pos_indices] = 1
+        pos_answer_mask = pos_answer_mask.view(batch_size, num_samples_q, num_samples_a)
+        log_pll = log_ll.masked_select((answer_mask * pos_answer_mask).bool())
+        loss = - log_pll.sum()
+
+
+        if contrast_labels is not None:
+            for b in range(batch_size):
+                for k in range(num_samples_q):
+                    indices = (contrast_labels[b] == k).nonzero().squeeze(-1).tolist()
+                    all_combinations = list(product(indices, indices))
+                    all_combinations = torch.tensor([comb for comb in all_combinations if comb[0] != comb[1]]) \
+                        .type_as(attention_mask)
+                    if len(all_combinations) > 0:
+                        extra_ignore_indices[b][all_combinations[:, 0] * num_samples_a + all_combinations[:, 1]] = 0
+        else:
+            extra_ignore_indices = (decoder_attention_mask_rep.sum(-1) > 0).view(batch_size, num_samples_q*num_samples_a)
+
+        if self.loss_type == 'ce':# and (output_mask.sum().item() != 1):
+            comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+            contrast_loss, contrast_logits = [], []
+
+            for i in range(num_samples_q):
+                if input_mask[0][i].item() == 1:
+                    ignore_mask = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
+                    ignore_mask[:, pos_indices] = 0
+                    ignore_mask = ignore_mask * extra_ignore_indices
+                    ignore_mask[:, pos_indices[i]] = 1
+                    ignore_mask1, ignore_mask2 = ignore_mask.clone(), ignore_mask.clone()
+                    ignore_mask1[:, 2] = 0
+                    ignore_mask2[:, 1] = 0
+                    ans_only_unnorm_scores_1 = comptability_scores.masked_fill(~ignore_mask1.bool(), -1e10)
+                    contrast_probs_1 = ans_only_unnorm_scores_1.log_softmax(-1)
+                    contrast_loss.append(contrast_probs_1[:, pos_indices[i]].unsqueeze(1))
+                    ans_only_unnorm_scores_2 = comptability_scores.masked_fill(~ignore_mask2.bool(), -1e10)
+                    contrast_probs_2 = ans_only_unnorm_scores_2.log_softmax(-1)
+                    contrast_loss.append(contrast_probs_2[:, pos_indices[i]].unsqueeze(1))
+
+            contrast_loss = torch.cat(contrast_loss, -1)
+
+            loss += - contrast_loss.sum(-1).mean()
+            outputs += [loss, lm_logprobs, contrast_logits]
+            if loss > 1e5:
+                print(json.dumps(self.tokenizer.decode(input_ids[0][0].tolist())))
+                print(loss)
+                print(contrast_loss)
+                print(log_pll)
+
+        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
+            actual_num_a = output_mask.sum(-1)
+            ull = log_ll_flat.view(batch_size, num_samples_q*num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q*num_samples_a, ans_len), -1e7).exp()
+            log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+            # neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
+            # log_ull = log_ull * neg_overlap_mask.float()
+            log_ull = log_ull.sum(-1) / (output_len+1).view(batch_size, -1).index_select(1, neg_indices)
+
+            loss += - log_ull.sum(-1).mean()
+
+            outputs += [loss, lm_logprobs]
+        else:
+            outputs += [loss, lm_logprobs]
+
+        return outputs
+
+
+
+# joint
+class ContrastiveEstimationAblationv7(T5ForConditionalGeneration):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+        super().__init__(config)
+        self.supervision = supervision
+        self.ans_symbol_idx = ans_sym_id
+        self.max_answer_length = max_ans_len
+        self.tokenizer = tokenizer
+        self.loss_type = loss_type #'ull', 'ce'
+        self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+
+
+    def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
+        batch_size, num_samples, seq_len = attention_mask.size()
+
+        #p (a|q, cij)
+        input_symbols = torch.ones(batch_size*num_samples, 1).fill_(self.ans_symbol_idx).type_as(attention_mask)
+        generated_ans = [input_symbols]
+
+        for i in range(max_len):
+            ans_outputs = self.decoder(
+                input_ids=input_symbols,
+                encoder_hidden_states=encoded_hidden_states.view(-1, encoded_hidden_states.size(-2),
+                                                                 encoded_hidden_states.size(-1)),
+                encoder_attention_mask=attention_mask.view(-1, attention_mask.size(-1))
+            )
+            ans_logits = self.lm_head(ans_outputs[0] * (self.model_dim ** -0.5))
+            ans_probs = ans_logits.log_softmax(-1)
+            pred_prob, pred_symbol = ans_probs[:, -1].topk(1, -1)
+            generated_ans.append(pred_symbol)
+            input_symbols = torch.cat([input_symbols, pred_symbol], -1)
+
+        generated_ans = torch.cat(generated_ans, -1)
+        ans_probs = ans_probs.view(batch_size, num_samples, -1, ans_probs.size(-1))
+        generated_ans = generated_ans.view(batch_size, num_samples, -1)
+        return [generated_ans, ans_probs]
+
+    def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None,
+                lm_labels=None, decoder_attention_mask=None, contrast_labels=None,
+                # to avoid errors
+                encoder_outputs=None, use_cache=None, decoder_past_key_value_states=None,
+                encoded_hidden_states=None, max_len=None, generate_answer=False):
+
+        batch_size, num_samples_q, seq_len = input_ids.size()
+        _, num_samples_a, ans_len = decoder_input_ids.size()
+        input_mask = (attention_mask.sum(-1) > 0).long()
+        output_mask = (decoder_attention_mask.sum(-1) > 0).long()
+
+        encoded_outputs = self.encoder(input_ids=input_ids.view(-1, input_ids.size(-1)),
+                                       attention_mask=attention_mask.view(-1, attention_mask.size(-1)))
+
+        encoded_states = encoded_outputs[0]
+        encoded_states_rep = encoded_states.unsqueeze(2).repeat(1, 1, num_samples_a, 1, 1)
+        encoded_states_rep = encoded_states_rep.view(batch_size, num_samples_q, num_samples_a, seq_len, -1)
+        attention_mask_rep = attention_mask.unsqueeze(2).repeat(1, 1, num_samples_a, 1)
+        attention_mask_rep = attention_mask_rep.view(batch_size, num_samples_q, num_samples_a, seq_len)
+
+        outputs = []
+        if generate_answer:
+            generated_out = self.generate(attention_mask=attention_mask, max_len=max_len,
+                                          encoded_hidden_states=encoded_states)
+            outputs.extend(generated_out)
+
+        decoder_input_ids_rep = decoder_input_ids.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_attention_mask_rep = decoder_attention_mask.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        lm_labels_rep = lm_labels.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_input_ids_rep[decoder_input_ids_rep == -100] = 0
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids_rep.view(-1, decoder_input_ids.size(-1)),
+            attention_mask=decoder_attention_mask_rep.view(-1, decoder_attention_mask.size(-1)),
+            encoder_hidden_states=encoded_states_rep.view(-1, seq_len, encoded_states.size(-1)),
+            encoder_attention_mask=attention_mask_rep.view(-1, seq_len)
+        )
+
+        sequence_output = decoder_outputs[0]
+        sequence_output = sequence_output.view(batch_size, -1, ans_len, sequence_output.size(-1))
+        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        lm_logits = self.lm_head(sequence_output)
+        lm_logprobs = lm_logits.log_softmax(-1)
+        lm_labels_flat = lm_labels_rep.view(-1)
+        lm_label_mask = (lm_labels_rep == -100).bool()
+        lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
+        lm_labels_flat_mask = lm_label_mask.view(-1)
+
+        extra_ignore_indices = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
+        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
+        pos_indices = pos_indices * num_samples_a + pos_indices
+        neg_indices = list(range(0, num_samples_a * num_samples_q))
+        for el in pos_indices.tolist() + (extra_ignore_indices[0] == 0).nonzero().squeeze(-1).tolist():
+            neg_indices.remove(el)
+        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
+
+        overlap_mask = (lm_labels_rep == self.eos_symbol_idx).long()
+
+        lm_labels_flat[lm_labels_flat == -100] = 0
+        log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        logits_flat = torch.gather(lm_logits.view(-1, lm_logprobs.size(-1)), -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
+        logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
+        output_len = decoder_attention_mask_rep.sum(-1)
+        log_ll = log_ll_flat.view(batch_size,-1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
+        pos_answer_mask = torch.zeros(batch_size, num_samples_a * num_samples_q).type_as(input_ids)
+        pos_answer_mask[:, pos_indices] = 1
+        pos_answer_mask = pos_answer_mask.view(batch_size, num_samples_q, num_samples_a)
+        comb_answer_mask = (answer_mask * pos_answer_mask).bool()
+
+        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
+
+        log_ll = log_ll.view(batch_size, num_samples_q, num_samples_a)
+
+        log_pll = log_ll.view(batch_size, -1).index_select(1, pos_indices)
+        loss = - log_pll.mean()
+
+        extra_ignore_indices = (input_ids.sum(-1) > 0).unsqueeze(-1).repeat(1, 1, num_samples_a). \
+            view(batch_size, num_samples_q*num_samples_a).long()
+
+        comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+
+        if self.loss_type == 'ce':
+            contrast_loss = []
+            for b in range(batch_size):
+                if output_mask[b].sum().item() == 2 and input_mask[b].sum().item() == 2:
+                    scores = comptability_scores[b].unsqueeze(0) + comptability_scores[b].unsqueeze(1)
+                    upper_tri_indices = torch.ones(comptability_scores[b].size(0), comptability_scores[b].size(0))
+                    partition = scores[torch.triu(upper_tri_indices, diagonal=1) == 1]
+                    partition = torch.logsumexp(partition, 0)
+                    gold_score = scores[0, -1]
+                    c_loss = - gold_score + partition
+                    #c_loss = 1 - gold_score + partition
+                    #c_loss = max(0, c_loss)
+                    contrast_loss.append(c_loss.unsqueeze(-1))
+                elif output_mask[b].sum().item() == 2 and input_mask[b].sum().item() == 1:
+                    batch_loss = []
+                    for i in range(num_samples_q):
+                        if input_mask[b][i].item() == 1:
+                            ignore_mask = torch.zeros(num_samples_q, num_samples_a).type_as(attention_mask)
+                            ignore_mask[i, :] = 1
+                            ignore_mask = ignore_mask.view(num_samples_q * num_samples_a) * extra_ignore_indices[b]
+                            ans_only_unnorm_scores = comptability_scores[b].masked_fill(~ignore_mask.bool(), -1e10)
+                            contrast_probs = ans_only_unnorm_scores.log_softmax(-1)
+                            batch_loss.append(-contrast_probs[pos_indices[i]].unsqueeze(0))
+                    contrast_loss.append(torch.cat(batch_loss))
+
+            if len(contrast_loss) > 0:
+                loss += torch.cat(contrast_loss).sum(-1)
+            outputs += [loss, lm_logprobs, []]
+
+        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
+            actual_num_a = output_mask.sum(-1)
+            ull = log_ll_flat.view(batch_size, num_samples_q*num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q*num_samples_a, ans_len), -1e7).exp()
+            log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+            # neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
+            # log_ull = log_ull * neg_overlap_mask.float()
+            log_ull = log_ull.sum(-1) / (output_len+1).view(batch_size, -1).index_select(1, neg_indices)
+
+            loss += - log_ull.sum(-1).mean()
+
+            outputs += [loss, lm_logprobs]
+        else:
+            outputs += [loss, lm_logprobs]
+
+        return outputs
+
+
 
 class ContrastiveEstimationAblationWithCompat(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
