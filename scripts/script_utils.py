@@ -1,9 +1,19 @@
 from allennlp.predictors.predictor import Predictor
 import torch
 import re
+import json
+import string
+import itertools
+import requests
 import copy
 import torch.nn.functional as F
+import numpy as np
 from transformers.modeling_utils import BeamHypotheses
+
+def untokenize(text):
+    tokens = text.split()
+    tokens = [" " + token.strip() if token.strip() not in list(string.punctuation)+["'s"] else token.strip() for token in tokens]
+    return "".join(tokens).strip()
 
 def load_model(model_path):
     const_model = Predictor.from_path(model_path, cuda_device=0)
@@ -128,13 +138,15 @@ def get_noun_phrase_pattern_more_or_less(stack, more_or_less_type):
 
 def get_ropes_specific_entities(question):
     # patterns = ['group', 'cell', 'team', 'unit']
-    matches = re.findall('\s+[a-z]+\s+[A-Z]{1}', question)
-    if len(matches) == 2:
-        tokens = [set(m.strip().split()) for m in matches]
-        diff_1 = list(tokens[0].difference(tokens[1]))
-        diff_2 = list(tokens[1].difference(tokens[0]))
-        if len(diff_1) == 1 and len(diff_2) == 1 and all([len(tok_set) == 1 for tok_set in [diff_1, diff_2]]):
-            return [m.strip() for m in matches]
+    matches = re.findall('\s+\w+\s+[A-Z]{1}[\s+|?]', question)
+    if len(matches) >= 2:
+        matches = [m.rstrip('?').strip() for m in matches]
+        for m1, m2 in itertools.combinations(matches, 2):
+            m1_tokens, m2_tokens = set(m1.split()), set(m2.split())
+            diff_1 = list(m1_tokens.difference(m2_tokens))
+            diff_2 = list(m2_tokens.difference(m1_tokens))
+            if len(diff_1) == 1 and len(diff_2) == 1 and all([len(tok_set) == 1 for tok_set in [diff_1, diff_2]]):
+                return [m1, m2]
     return []
 
 def get_noun_phrase_in_sibling_allenlp(constituent):
@@ -151,6 +163,19 @@ def get_noun_phrase_in_sibling_allenlp(constituent):
                 if result:
                     return result
 
+def get_all_noun_phrase(constituent, noun_phrases=[]):
+    if constituent['nodeType'] == 'NP' and " or " not in constituent["word"] and " than " not in constituent["word"]:
+        constituent["word"] = untokenize(constituent["word"])
+        noun_phrases.append(constituent)
+    else:
+        if "children" in constituent:
+            for k, child in enumerate(constituent["children"]):
+                if child['nodeType'] == 'NP' and " or " not in child["word"] and " than " not in child["word"]:
+                    child["word"] = untokenize(child["word"])
+                    noun_phrases.append(child)
+                else:
+                    get_all_noun_phrase(child, noun_phrases=noun_phrases)
+
 def get_noun_phrase_from_stack(stack):
     if stack[-1]['nodeType'] == 'NP' and " or " not in stack[-1]["word"]:
         return stack[-1]
@@ -160,6 +185,13 @@ def get_noun_phrase_from_stack(stack):
         results = get_noun_phrase_in_sibling_allenlp(const_item)
         if results:
             return results
+
+
+def try_allennlp_server(sentence):
+    url = "https://demo.allennlp.org/api/constituency-parser/predict"
+    jobj = {'sentence': sentence}
+    result = requests.post(url, json=jobj)
+    return json.loads(result.text)
 
 
 def sample_sequences_bug(model, encoder_input_ids, decoder_start_token_id, max_length,
@@ -259,7 +291,7 @@ def sample_sequences_v2(model, encoder_input_ids, decoder_start_token_id, max_le
     decoder_input_ids = torch.ones(num_return_sequences * batch_size, 1).type_as(encoder_input_ids)
     decoder_input_ids.fill_(decoder_start_token_id)
     eos_symbol = model.tokenizer.convert_tokens_to_ids("<eos>")
-
+    model.eval()
     with torch.no_grad():
         encoded_states = model.encoder(input_ids=encoder_input_ids.view(-1, encoder_input_ids.size(-1)),
                                        attention_mask=attention_mask.view(-1, attention_mask.size(-1)))[0]
@@ -296,14 +328,28 @@ def sample_sequences_v2(model, encoder_input_ids, decoder_start_token_id, max_le
                         if with_topk:
                             sorted_cand_probs, sorted_cand_ids = torch.topk(probs[l, 0, :], num_return_sequences)
                         else:
-                            sorted_cand_ids = torch.multinomial(probs[l, 0, :], num_return_sequences)
+                            numpy_pr = probs[l, 0, :].view(-1).numpy()
+                            sorted_cand_ids = torch.from_numpy(np.random.choice(np.arange(0, numpy_pr.shape[0]),
+                                                                            p=numpy_pr / np.sum(numpy_pr),
+                                                                            size=num_return_sequences,
+                                                                            replace=False)).contiguous()
+
+                            # sorted_cand_ids = torch.multinomial(probs[l, 0, :], num_return_sequences)
                             sorted_cand_probs = probs[l, 0, :].gather(-1, sorted_cand_ids)
                         beam_hypothesis_ids[l, :, 0].copy_(sorted_cand_ids)
                         beam_hypothesis_probs[l, :, 0].copy_(sorted_cand_probs)
                     else:
                         prev_cand_ids = beam_hypothesis_ids[:, :, :i].clone()
                         prev_cand_probs = beam_hypothesis_probs[:, :, :i].clone()
-                        cand_ids = torch.multinomial(probs[l, :, :], num_return_sequences)
+
+                        cand_ids = []
+                        for x_cnt in range(probs.size(1)):
+                            numpy_p = probs[l, x_cnt, :].numpy()
+                            cand_ids.append(np.random.choice(np.arange(0, numpy_p.shape[0]), p=numpy_p/np.sum(numpy_p),
+                                             size=num_return_sequences, replace=False))
+                        cand_ids = torch.from_numpy(np.concatenate([np.expand_dims(c, axis=1) for c in cand_ids],
+                                                                   axis=1).transpose()).contiguous()
+                        # cand_ids = torch.multinomial(probs[l, :, :], num_return_sequences)
                         cand_probs = probs[l, :, :].gather(-1, cand_ids)
                         sum_ll = beam_hypothesis_probs[l, :, :i].log().sum(-1).unsqueeze(-1)
                         sum_probs = (cand_probs.log() + sum_ll).exp()
@@ -311,7 +357,13 @@ def sample_sequences_v2(model, encoder_input_ids, decoder_start_token_id, max_le
                         if with_topk:
                             sorted_probs, sorted_inds = torch.topk(sum_probs.view(-1), num_return_sequences)
                         else:
-                            sorted_inds = torch.multinomial(sum_probs.view(-1), num_return_sequences)
+                            numpy_sum_p = sum_probs.view(-1).numpy()
+                            sorted_inds = torch.from_numpy(np.random.choice(np.arange(0, numpy_sum_p.shape[0]),
+                                                                                p=numpy_sum_p/np.sum(numpy_sum_p),
+                                                                                size=num_return_sequences,
+                                                                                replace=False)).contiguous()
+
+                            # sorted_inds = torch.multinomial(sum_probs.view(-1), num_return_sequences)
 
                         sorted_cand_ids = cand_ids.view(-1).gather(-1, sorted_inds)
                         sorted_cand_probs = cand_probs.view(-1).gather(-1, sorted_inds)
@@ -335,9 +387,9 @@ def sample_sequences_v2(model, encoder_input_ids, decoder_start_token_id, max_le
                             topk_probs, topk_inds = torch.topk(probs[l, k, :], 1)
                             beam_hypothesis_ids[l, k, i].copy_(topk_inds[0])
                             beam_hypothesis_probs[l, k, i].copy_(topk_probs[0])
-                            for k, sci in enumerate(topk_inds.view(-1)):
-                                if sci.item() == eos_symbol:
-                                    all_done[l][k] = True
+                            sci = topk_inds.view(-1)[0]
+                            if sci.item() == eos_symbol:
+                                all_done[l][k] = True
 
             input_ids = torch.cat([start_symbols, beam_hypothesis_ids[:, :, :i+1]], -1)
 
