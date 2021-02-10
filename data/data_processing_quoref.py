@@ -121,6 +121,8 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
         self.topk_candidates = {}
         for line in open("/home/ddua/data/quoref/quoref_topk_predictions.txt").readlines():
             jobj = json.loads(line)
+            if self.args.lowercase:
+                jobj["topk"] = [t_k.lower().strip() for t_k in jobj["topk"]]
             self.topk_candidates[jobj["id"]] = jobj["topk"]
 
 
@@ -136,6 +138,7 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
             answer = " <multi> ".join(original_answers)
             if self.args.lowercase:
                 question = question.lower()
+                original_answers = [org_ans.lower().strip() for org_ans in original_answers]
                 answer = answer.lower()
             question = "{0} {1}".format(self.special_tokens[4], question)
             answer = "{0} {1} {2}".format(self.special_tokens[5], answer, self.special_tokens[1])
@@ -151,8 +154,8 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
             answer_masks += [[1]*len(answer_tokens[:-1]) + [0]*(self.args.max_output_length-len(answer_tokens))]
 
             if self.y_only and instance["mode"] == "train":
-                gold_ids = self.tokenizer.encode_plus(" ".join(original_answers).lower())["input_ids"]
-                candidate_ids = [self.tokenizer.encode_plus(candidate.lower())["input_ids"]
+                gold_ids = self.tokenizer.encode_plus(" ".join(original_answers))["input_ids"]
+                candidate_ids = [self.tokenizer.encode_plus(candidate)["input_ids"]
                                  for candidate in self.topk_candidates[qa_pair["id"]]]
                 candidate_list = self.rank_candidates(gold_ids, candidate_ids)
                 for candidate in candidate_list:
@@ -164,8 +167,7 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
 
 
             all_instances.append({"input_ids": input_ids, "answer_input": answer_inputs,
-                                  "answer_mask": answer_masks, "answer_output": answer_outputs,
-                                  })
+                                  "answer_mask": answer_masks, "answer_output": answer_outputs})
 
         return all_instances
 

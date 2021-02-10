@@ -3175,7 +3175,6 @@ class ContrastiveEstimationAblationv6(T5ForConditionalGeneration):
         logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
                  (output_len.view(batch_size, -1, num_samples_a) + 1)
         answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
-        #answer_mask = ((1 - lm_labels_flat_mask.view(-1, num_samples_a, ans_len).long()).sum(-1) > 0).long()
         logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
 
         output_len_non_over = overlap_mask.sum(-1) + 1
@@ -3188,31 +3187,21 @@ class ContrastiveEstimationAblationv6(T5ForConditionalGeneration):
         log_pll = log_ll.view(batch_size, -1).index_select(1, pos_indices)
         loss = - log_pll.mean()
 
-        if contrast_labels is not None:
-            for b in range(batch_size):
-                for k in range(num_samples_q):
-                    indices = (contrast_labels[b] == k).nonzero().squeeze(-1).tolist()
-                    all_combinations = list(product(indices, indices))
-                    all_combinations = torch.tensor([comb for comb in all_combinations if comb[0] != comb[1]]) \
-                        .type_as(attention_mask)
-                    if len(all_combinations) > 0:
-                        extra_ignore_indices[b][all_combinations[:, 0] * num_samples_a + all_combinations[:, 1]] = 0
-        else:
-            # extra_ignore_indices = (decoder_attention_mask_rep.sum(-1) > 0).view(batch_size, num_samples_q*num_samples_a)
-            extra_ignore_indices = (input_ids.sum(-1) > 0).unsqueeze(-1).repeat(1, 1, num_samples_a).\
-                view(batch_size, num_samples_q*num_samples_a).long()
+        extra_ignore_indices = (input_ids.sum(-1) > 0).unsqueeze(-1).repeat(1, 1, num_samples_a).\
+            view(batch_size, num_samples_q*num_samples_a).long()
 
         if self.loss_type == 'ce':
             comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
             contrast_loss, contrast_logits = [], []
 
             for i in range(num_samples_q):
-                if input_mask[0][i].item() == 1:
+                if torch.any(input_mask[:, i].bool()).item():
                     ignore_mask = torch.zeros(batch_size, num_samples_q, num_samples_a).type_as(attention_mask)
                     ignore_mask[:, i, :] = 1
                     ignore_mask = ignore_mask.view(batch_size, num_samples_q * num_samples_a) * extra_ignore_indices
                     ans_only_unnorm_scores = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
                     contrast_probs = ans_only_unnorm_scores.log_softmax(-1)
+                    contrast_probs = contrast_probs * ignore_mask
                     contrast_loss.append(contrast_probs[:, pos_indices[i]].unsqueeze(1))
 
             contrast_loss = torch.cat(contrast_loss, -1)
