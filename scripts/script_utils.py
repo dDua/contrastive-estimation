@@ -1,4 +1,4 @@
-from allennlp.predictors.predictor import Predictor
+#from allennlp.predictors.predictor import Predictor
 import torch
 import re
 import json
@@ -8,17 +8,17 @@ import requests
 import copy
 import torch.nn.functional as F
 import numpy as np
-from transformers.modeling_utils import BeamHypotheses
+from transformers.generation_beam_search import BeamHypotheses
 
 def untokenize(text):
     tokens = text.split()
     tokens = [" " + token.strip() if token.strip() not in list(string.punctuation)+["'s"] else token.strip() for token in tokens]
     return "".join(tokens).strip()
-
+"""
 def load_model(model_path):
     const_model = Predictor.from_path(model_path, cuda_device=0)
     return const_model
-
+"""
 def get_prep_level_const_benepar(tree, level):
     for k, child in enumerate(tree._.children):
         if (child[0].text == "than") and get_constituent_label_benepar(child)[0] == 'PP':
@@ -328,11 +328,11 @@ def sample_sequences_v2(model, encoder_input_ids, decoder_start_token_id, max_le
                         if with_topk:
                             sorted_cand_probs, sorted_cand_ids = torch.topk(probs[l, 0, :], num_return_sequences)
                         else:
-                            numpy_pr = probs[l, 0, :].view(-1).numpy()
+                            numpy_pr = probs[l, 0, :].view(-1).cpu().numpy()
                             sorted_cand_ids = torch.from_numpy(np.random.choice(np.arange(0, numpy_pr.shape[0]),
                                                                             p=numpy_pr / np.sum(numpy_pr),
                                                                             size=num_return_sequences,
-                                                                            replace=False)).contiguous()
+                                                                            replace=False)).contiguous().cuda()
 
                             # sorted_cand_ids = torch.multinomial(probs[l, 0, :], num_return_sequences)
                             sorted_cand_probs = probs[l, 0, :].gather(-1, sorted_cand_ids)
@@ -344,11 +344,11 @@ def sample_sequences_v2(model, encoder_input_ids, decoder_start_token_id, max_le
 
                         cand_ids = []
                         for x_cnt in range(probs.size(1)):
-                            numpy_p = probs[l, x_cnt, :].numpy()
+                            numpy_p = probs[l, x_cnt, :].cpu().numpy()
                             cand_ids.append(np.random.choice(np.arange(0, numpy_p.shape[0]), p=numpy_p/np.sum(numpy_p),
                                              size=num_return_sequences, replace=False))
                         cand_ids = torch.from_numpy(np.concatenate([np.expand_dims(c, axis=1) for c in cand_ids],
-                                                                   axis=1).transpose()).contiguous()
+                                                                   axis=1).transpose()).contiguous().cuda()
                         # cand_ids = torch.multinomial(probs[l, :, :], num_return_sequences)
                         cand_probs = probs[l, :, :].gather(-1, cand_ids)
                         sum_ll = beam_hypothesis_probs[l, :, :i].log().sum(-1).unsqueeze(-1)
@@ -357,11 +357,11 @@ def sample_sequences_v2(model, encoder_input_ids, decoder_start_token_id, max_le
                         if with_topk:
                             sorted_probs, sorted_inds = torch.topk(sum_probs.view(-1), num_return_sequences)
                         else:
-                            numpy_sum_p = sum_probs.view(-1).numpy()
+                            numpy_sum_p = sum_probs.view(-1).cpu().numpy()
                             sorted_inds = torch.from_numpy(np.random.choice(np.arange(0, numpy_sum_p.shape[0]),
                                                                                 p=numpy_sum_p/np.sum(numpy_sum_p),
                                                                                 size=num_return_sequences,
-                                                                                replace=False)).contiguous()
+                                                                                replace=False)).contiguous().cuda()
 
                             # sorted_inds = torch.multinomial(sum_probs.view(-1), num_return_sequences)
 

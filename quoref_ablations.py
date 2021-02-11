@@ -21,11 +21,11 @@ from transformers import T5Tokenizer, T5ForConditionalGeneration
 from transformers import AdamW
 from model.comparison_model import *
 from configs.t5_quoref_config import get_arguments as get_arguments_quoref
-from configs.t5_ropes_config import get_arguments as get_arguments_ropes
-from configs.comparison_config import get_arguments as get_arguments_comp
-from data.data_processing_ropes import *
+#from configs.t5_ropes_config import get_arguments as get_arguments_ropes
+#from configs.comparison_config import get_arguments as get_arguments_comp
+#from data.data_processing_ropes import *
 from data.data_processing_quoref import *
-from data.data_processing_contrast import HotpotQADataComparisonAblations, HotpotQADataComparisonAblationsv1
+#from data.data_processing_contrast import HotpotQADataComparisonAblations, HotpotQADataComparisonAblationsv1
 from utils import get_exact_match, get_f1
 
 logger = logging.getLogger(__file__)
@@ -59,7 +59,7 @@ def train():
     tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
     tokenizer.add_special_tokens({"bos_token": "<bos>", "eos_token": "<eos>", "pad_token": "<pad>",
                                    "cls_token": "<cls>", "additional_special_tokens": dataset_class.special_tokens})
-    dataset = dataset_class(logger, args, tokenizer, lazy=args.lazy, y_only=True, y_types='topk')
+    dataset = dataset_class(logger, args, tokenizer, contrastive_data=args.contrastive_data, lazy=args.lazy, y_only=True, y_types='topk')
     out_symbol_idx = tokenizer.convert_tokens_to_ids("<answer>")
     model = model_class.from_pretrained(args.model_checkpoint, **{"ans_sym_id": out_symbol_idx,
                                                                   "max_ans_len": args.max_output_length,
