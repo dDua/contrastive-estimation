@@ -10,6 +10,10 @@ from model.answering_model import T5QA, T5QAInfer
 from data.data_processing_ropes import RopesQADataBaseline, RopesQADataComparisonContrastGen3, RopesQADataContrastMineY, RopesQADataContrastMineX, RopesQADataContrastMineXv2
 from data.data_processing_all_pairs_v2 import HotpotQADataAllPairs
 from data.data_processing_quoref import QuorefQADataBaseline
+<<<<<<< HEAD
+=======
+# from data.data_processing_torque import TorqueQADataBaseline
+>>>>>>> e2884dc... quoref baseline seems to be running fine
 from data.data_processing_contrast import HotpotQADataComparisonContrastGenV3, HotpotQADataIntersectionContrastGenV3
 from transformers import T5Tokenizer
 from utils import get_multi_span_metrics
@@ -20,15 +24,15 @@ def get_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_beams', type=int, default=4)
     parser.add_argument("--num_negative", default=0, type=int)
-    parser.add_argument("--lowercase", action='store_true', default=True)
+    parser.add_argument("--lowercase", action='store_true', default=False)
     parser.add_argument("--lazy", action='store_true', default=False)
     parser.add_argument('--max_question_length', type=int, default=50)
     parser.add_argument('--max_context_length', type=int, default=650)
     parser.add_argument('--max_output_length', type=int, default=20)
     parser.add_argument("--predict_batch_size", default=1, type=int)
     parser.add_argument("--dev_split_name", default="quoref-dev-v0.1")
-    parser.add_argument("--dataset_path", type=str, default="/home/ddua/data/quoref/")
-    parser.add_argument("--dataset_cache", default="/extra/ucinlp0/ddua/quoref/cache/")
+    parser.add_argument("--dataset_path", type=str, default="datasets/quoref/")
+    parser.add_argument("--dataset_cache", default="datasets/quoref/cache/")
     parser.add_argument("--model_checkpoint", type=str, default="/extra/ucinlp0/ddua/quoref/quoref_answer_model_large/")
     parser.add_argument("--reasoning_file",
                         default="/home/ddua/data/Adversarial-MultiHopQA/data/hotpotqa/reasoning_splits/reasoning.json")
@@ -200,5 +204,6 @@ def joint_ranking():
     print(correct, total)
 
 if __name__ == "__main__":
-    print(inference_baseline())
-
+    em, f1 = inference_baseline()
+    print("Final results:")
+    print("EM: {}  F1: {}".format(em, f1))

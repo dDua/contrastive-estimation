@@ -56,8 +56,6 @@ def train():
     tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
     tokenizer.add_special_tokens({"bos_token": "<bos>", "eos_token": "<eos>", "pad_token": "<pad>",
                                    "cls_token": "<cls>", "additional_special_tokens": dataset_class.special_tokens})
-    print(args)
-    exit()
     dataset = dataset_class(logger, args, tokenizer, lazy=args.lazy, aug=False)
     model = model_class.from_pretrained(args.model_checkpoint, **{"ans_sym_id": dataset.special_token_ids[5],
                                                                 "max_ans_len": args.max_output_length,

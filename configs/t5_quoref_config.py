@@ -17,10 +17,10 @@ def get_arguments():
     parser.add_argument("--qdmr_path", type=str, default="/mnt/750GB/data/Break-dataset/QDMR-high-level/train.csv")
     parser.add_argument("--do_train", action='store_true', default=True)
     parser.add_argument("--do_predict", action='store_true')
-    parser.add_argument("--train_split_name", default="demo_train")
-    parser.add_argument("--dev_split_name", default="demo_dev")
-    # parser.add_argument("--train_split_name", default="quoref-train-v0.1")
-    # parser.add_argument("--dev_split_name", default="quoref-dev-v0.1")
+    # parser.add_argument("--train_split_name", default="demo_train")
+    # parser.add_argument("--dev_split_name", default="demo_dev")
+    parser.add_argument("--train_split_name", default="quoref-train-v0.1")
+    parser.add_argument("--dev_split_name", default="quoref-dev-v0.1")
     parser.add_argument("--distributed", action='store_true', default=True)
     parser.add_argument("--lazy", default=False)
     parser.add_argument("--input_type", type=str, default="Q")
@@ -38,7 +38,7 @@ def get_arguments():
 
     # Preprocessing/decoding-related parameters
     parser.add_argument('--max_question_length', type=int, default=50)
-    parser.add_argument('--max_context_length', type=int, default=512)
+    parser.add_argument('--max_context_length', type=int, default=650)
     parser.add_argument('--max_output_length', type=int, default=20)
     parser.add_argument('--num_beams', type=int, default=4)
     parser.add_argument("--append_another_bos", action='store_true', default=False)
