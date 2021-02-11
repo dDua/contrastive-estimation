@@ -3,7 +3,8 @@ import numpy as np
 import string
 import torch
 import torch.nn.functional as F
-from transformers.modeling_utils import BeamHypotheses
+#from transformers.modeling_utils import BeamHypotheses
+from transformers.generation_beam_search import BeamHypotheses
 
 def get_answer_prefix(tokenizer, answer_text, sf_title, context_map):
     tokenized_answer = tokenizer.encode_plus(answer_text, pad_to_max_length=True)

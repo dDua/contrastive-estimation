@@ -8,8 +8,10 @@ from model.answering_model import T5QA
 from scripts.script_utils import sample_sequences, sample_sequences_v2
 import torch.nn.functional as F
 
-root_dir = "/mnt/750GB/data/quoref/quoref_answer_model_large_lr/"
-data = json.load(open("/mnt/750GB/data/quoref/quoref-train-v0.1.json"))["data"]
+#root_dir = "/mnt/750GB/data/quoref/quoref_answer_model_large_lr/"
+#data = json.load(open("/mnt/750GB/data/quoref/quoref-train-v0.1.json"))["data"]
+root_dir = "/net/nfs2.corp/allennlp/pradeepd/data/quoref_t5_large/"
+data = json.load(open("/net/nfs2.corp/allennlp/pradeepd/data/quoref/quoref-train-v0.1.json"))["data"]
 
 def get_topk_results(file_ptr):
     tokenizer = T5Tokenizer.from_pretrained(root_dir)
@@ -86,4 +88,4 @@ def dump_topk_predictions():
 
 
 if __name__ == "__main__":
-    get_topk_results(open("quoref_topk_predictions_v2.txt", 'w'))
+    get_topk_results(open("/net/nfs2.corp/allennlp/pradeepd/data/quoref/quoref_topk_predictions_t5_cased.txt", 'w'))

@@ -15,9 +15,12 @@ class QuorefQADataBaseline(HotpotQADataBase):
         self.aug = aug
 
     def get_instance(self, instance):
+        #context_info = process_all_contexts_quoref(self.tokenizer, instance, self.args.max_context_length -
+        #                                     int(self.args.max_question_length) - int(self.args.max_output_length),
+        #                                     add_sent_ends=True, lowercase=self.args.lowercase)
         context_info = process_all_contexts_quoref(self.tokenizer, instance, self.args.max_context_length -
                                              int(self.args.max_question_length) - int(self.args.max_output_length),
-                                             add_sent_ends=True, lowercase=self.args.lowercase)
+                                             lowercase=self.args.lowercase)
 
         all_instances = []
         for qa_pair in instance["qas"]:
@@ -112,14 +115,14 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
     special_tokens = ["<bos>", "<eos>", "<paragraph>", "<title>", "<question>",
                       "<answer>", "<multi>", "<pad>"]
 
-    def __init__(self, logger, args, tokenizer, lazy=False, y_only=False, y_types='topk'):
+    def __init__(self, logger, args, tokenizer, contrastive_data, lazy=False, y_only=False, y_types='topk'):
         super().__init__(logger, args, tokenizer)
         self.model_inputs = ["input_ids", "attention_mask", "answer_input", "answer_output", "answer_mask"]
         self.lazy = lazy
         self.y_only = y_only
         self.y_types = y_types
         self.topk_candidates = {}
-        for line in open("/home/ddua/data/quoref/quoref_topk_predictions.txt").readlines():
+        for line in open(contrastive_data).readlines():
             jobj = json.loads(line)
             if self.args.lowercase:
                 jobj["topk"] = [t_k.lower().strip() for t_k in jobj["topk"]]
@@ -127,9 +130,12 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
 
 
     def get_instance(self, instance):
+        #context_info = process_all_contexts_quoref(self.tokenizer, instance, self.args.max_context_length -
+        #                                     int(self.args.max_question_length) - int(self.args.max_output_length),
+        #                                     add_sent_ends=True, lowercase=self.args.lowercase)
         context_info = process_all_contexts_quoref(self.tokenizer, instance, self.args.max_context_length -
                                              int(self.args.max_question_length) - int(self.args.max_output_length),
-                                             add_sent_ends=True, lowercase=self.args.lowercase)
+                                             lowercase=self.args.lowercase)
 
         all_instances = []
         for qa_pair in instance["qas"]:

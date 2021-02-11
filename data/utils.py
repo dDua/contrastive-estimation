@@ -7,7 +7,7 @@ import json
 import random
 import numpy as np
 import torch
-import lemminflect
+#import lemminflect
 from torch.utils.data import Dataset
 import traceback
 from collections import defaultdict
@@ -15,7 +15,7 @@ from tqdm import tqdm
 from torch.utils.data import DataLoader, TensorDataset
 import spacy
 from spacy.symbols import nsubj, VERB
-from scripts.comparison_type import sup_replacements, superlatives
+#from scripts.comparison_type import sup_replacements, superlatives
 from collections import deque
 
 nlp = spacy.load("en_core_web_sm")
@@ -227,7 +227,7 @@ def process_all_contexts_wikihop(args, tokenizer, instance, max_passage_len, add
 
 def process_all_contexts_quoref(tokenizer, instance, max_passage_len, lowercase=True):
     context_info = []
-    line = instance["context"] if lowercase else instance["context"].lower()
+    line = instance["context"].lower() if lowercase else instance["context"]
     full_context_ids = tokenizer.encode_plus(line)["input_ids"][:max_passage_len]
 
     context_info.append({"tokens": full_context_ids, "sentence_offsets": [len(full_context_ids)]})
@@ -836,6 +836,7 @@ def get_contrast_qa_old(qa_pairs):
 
     return pairs
 
+"""
 def get_contrast_qa(qa_pairs, max_group_size=3, fixed_group_size=2, force_group_size=False):
     scores = np.zeros(shape=(len(qa_pairs), len(qa_pairs)))
     comparatives = superlatives
@@ -910,7 +911,7 @@ def get_contrast_qa(qa_pairs, max_group_size=3, fixed_group_size=2, force_group_
         qa_groups += [grp_qap]
 
     return qa_groups
-
+"""
 
 def get_contrast_for_comp_v1(qapair):
     question, answer, qid = qapair
@@ -939,6 +940,7 @@ def get_new_answer(answer, choices):
     new_answer = new_answer[0].strip()
     return new_answer
 
+"""
 def get_contrast_for_comp_v2(qapair):
     question, answer, qid = qapair
 
@@ -956,6 +958,7 @@ def get_contrast_for_comp_v2(qapair):
         return new_question, new_answer, qid+"_1"
 
     return None
+"""
 
 def extract_answer_choices(question, answer):
     new_answer, choice1, choice2 = None, None, None

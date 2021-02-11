@@ -4,7 +4,7 @@ import json
 from copy import deepcopy
 from data.data_processing import HotpotQADataBase
 from data.utils import process_all_contexts, get_token_encodings
-from scripts.intersection_type import min_edit_distance
+#from scripts.intersection_type import min_edit_distance
 
 class HotpotQADataComparisonContrast(HotpotQADataBase):
     def __init__(self, logger, args, tokenizer, lazy=False):
@@ -2609,7 +2609,7 @@ class HotpotQADataComparisonAblations(HotpotQADataBase):
             return set(text.split())
         else:
             return text
-
+    """
     def get_combinations(self, topk_candidates, pos_qapairs, context):
         clusters = [[] for _ in range(len(pos_qapairs))]
         context_tokens = self.process(context)
@@ -2658,7 +2658,7 @@ class HotpotQADataComparisonAblations(HotpotQADataBase):
         global_negative.update(set(range(len(topk_candidates))).difference(marked_indices))
         global_negative = global_negative.difference(marked_indices)
         return final_clusters, global_negative
-
+    """
     def get_instance(self, instance):
         bos_token, eos_token = self.tokenizer.convert_tokens_to_ids(["<bos>", "<eos>"])
         final_instances = []

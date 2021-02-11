@@ -22,7 +22,7 @@ from transformers import AdamW
 from model.answering_model import T5QA
 from configs.t5_quoref_config import get_arguments as get_arguments_quoref
 from data.data_processing_quoref import QuorefQADataBaseline
-from configs.t5_torque_config import get_arguments as get_arguments_torque
+#from configs.t5_torque_config import get_arguments as get_arguments_torque
 
 logger = logging.getLogger(__file__)
 
