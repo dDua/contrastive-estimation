@@ -29,7 +29,7 @@ def get_arguments():
     # parser.add_argument("--model_checkpoint", type=str, default="/mnt/750GB/data/ropes/ropes_answering_model_large_v2")
     # parser.add_argument("--model_checkpoint", type=str, default="/mnt/750GB/data/ropes/ropes_base_2/")
     parser.add_argument("--model_checkpoint", type=str, default="t5-small")
-    parser.add_argument("--lowercase", action='store_true', default=True)
+    parser.add_argument("--lowercase", action='store_true', default=False)
     parser.add_argument("--ans_coef", type=float, default=1.0)
     parser.add_argument("--qg_coef", type=float, default=1.0)
     parser.add_argument("--nce_coef", type=float, default=5.0)

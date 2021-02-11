@@ -22,6 +22,8 @@ pip install torch==1.5.1+cu101 torchvision==0.6.1+cu101 -f https://download.pyto
 
 pip install pytorch-ignite==0.2.0
 pip install tensorflow-gpu==1.12.0
+conda install cudatoolkit=9.0
+conda install -c anaconda cudnn (v7.6.5)
 pip install transformers==2.9.1
 
 pip install word2number==1.1
