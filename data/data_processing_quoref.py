@@ -15,10 +15,13 @@ class QuorefQADataBaseline(HotpotQADataBase):
         self.aug = aug
 
     def get_instance(self, instance):
-        context_info = process_all_contexts_quoref(self.tokenizer, instance, self.args.max_context_length -
-                                             int(self.args.max_question_length) - int(self.args.max_output_length),
-                                             lowercase=self.args.lowercase)
-
+        context_info = process_all_contexts_quoref(tokenizer=self.tokenizer,
+                                                   instance=instance,
+                                                   max_passage_len=(self.args.max_context_length -
+                                                                    int(self.args.max_question_length) -
+                                                                    int(self.args.max_output_length)),
+                                                   lowercase=self.args.lowercase)
+        # add_sent_ends = True
         all_instances = []
         for qa_pair in instance["qas"]:
             question = qa_pair["question"] if qa_pair["question"].endswith("?") else qa_pair["question"] + "?"
@@ -127,9 +130,13 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
 
 
     def get_instance(self, instance):
-        context_info = process_all_contexts_quoref(self.tokenizer, instance, self.args.max_context_length -
-                                             int(self.args.max_question_length) - int(self.args.max_output_length),
-                                             add_sent_ends=True, lowercase=self.args.lowercase)
+        context_info = process_all_contexts_quoref(tokenizer=self.tokenizer,
+                                                   instance=instance,
+                                                   max_passage_len=(self.args.max_context_length -
+                                                                    int(self.args.max_question_length) -
+                                                                    int(self.args.max_output_length)),
+                                                   lowercase=self.args.lowercase)
+        # add_sent_ends = True
 
         all_instances = []
         for qa_pair in instance["qas"]:

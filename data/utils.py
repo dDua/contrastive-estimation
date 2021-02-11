@@ -505,6 +505,8 @@ def get_dataset(logger, dataset, dataset_cache, dataset_path, split='train', mod
         all_instances = get_torque_instances(dataset, dataset_path, mode)
 
     if dataset_cache:
+        cache_directory = os.path.split(dataset_cache)[0]
+        os.makedirs(cache_directory, exist_ok=True)
         torch.save(all_instances, dataset_cache)
 
     logger.info("Dataset cached at %s", dataset_cache)
