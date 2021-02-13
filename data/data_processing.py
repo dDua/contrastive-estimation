@@ -76,7 +76,7 @@ class HotpotQADataBase(object):
 
         return data_point
 
-    def pad_and_tensorize_dataset(self, instances):
+    def pad_and_tensorize_dataset(self, instances, mode="train"):
         padding = 0
         max_l = min(self.args.max_context_length, max(len(x) for x in instances["input_ids"]))
         max_q = min(self.args.max_question_length, max(len(x) for x in instances["question_ids"]))
