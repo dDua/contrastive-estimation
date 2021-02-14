@@ -16,6 +16,7 @@ class HotpotQADataComparisonAblationsv2(HotpotQADataBase):
         self.x_only = x_only
         self.y_types = y_types
         self.x_types = x_types
+        self.args = args
 
     def process(self, text, split_text=True):
         text = text.replace('"', '').replace(',','').replace('.','').replace("’", "'").replace("?", "'").strip().lower()
@@ -147,19 +148,28 @@ class HotpotQADataComparisonAblationsv2(HotpotQADataBase):
     def pad_instances_lazy(self, instances, mode):
         max_l = self.args.max_context_length
         max_o = self.args.max_output_length
-
+        num_qa_pairs = len(instances["input_ids"])
         if mode == "train":
             if self.y_only:
-                max_qs, max_as = 1, 2
+                # check if any topks
+                a_inds = list(range(num_qa_pairs, min(len(instances["output_src"]), num_qa_pairs + self.args.num_cont_ans_cand)))
+                # add mined
+                a_inds += [0] + list(range(1, num_qa_pairs))
+                a_inds = list(set(a_inds))
+                # pad
+                a_inds += list(range(len(a_inds), self.args.num_cont_ans_cand))
+                a_inds = sorted(a_inds)
+
+                max_qs, max_as = [0], a_inds[:self.args.num_cont_ans_cand]
             elif self.x_only:
-                max_qs, max_as = 2, 1
+                max_qs, max_as = self.args.num_ques_cand, [0]
             else:
                 if self.x_types in ["mine2", "gen"]:
-                    max_qs, max_as = 2, 2
+                    max_qs, max_as = list(range(self.args.num_cont_ques_cand)), list(range(self.args.num_cont_ques_cand))
                 elif self.x_types == "mine3":
-                    max_qs = 3
+                    max_qs = list(range(self.args.num_cont_ques_cand))
         else:
-            max_qs, max_as = 1, 1
+            max_qs, max_as = [0], [0]
 
         for name in self.model_inputs:
             if "output" in name:
@@ -174,8 +184,8 @@ class HotpotQADataComparisonAblationsv2(HotpotQADataBase):
             for k, sequence in enumerate(instances[name]):
                 sequence += [padding] * (max_n - len(sequence))
                 instances[name][k] = sequence[:max_n]
-            instances[name] += [[padding] * max_n] * (max_ns - len(instances[name]))
-            instances[name] = instances[name][:max_ns]
+            instances[name] += [[padding] * max_n] * (len(max_ns) - len(instances[name]))
+            instances[name] = [instances[name][seq_ind] for seq_ind in max_ns]
         return instances
 
     def pad_and_tensorize_dataset(self, instances, mode="train"):
