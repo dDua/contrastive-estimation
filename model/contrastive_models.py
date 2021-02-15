@@ -490,17 +490,18 @@ class ContrastiveEstimationFullPartitionExp(T5ForConditionalGeneration):
             comptability_scores = score_fn
             contrast_loss, contrast_logits = [], []
 
-            for i in range(num_samples_q):
-                if input_mask[0][i].item() == 1:
-                    ignore_mask = torch.ones(batch_size, num_samples_q*num_samples_a).type_as(attention_mask)
-                    ignore_mask[:, pos_indices] = 0
-                    ignore_mask = ignore_mask * answer_mask.view(batch_size, -1)
-                    ignore_mask[:, pos_indices[i]] = 1
-                    ans_only_unnorm_scores_i = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
-                    contrast_probs = ans_only_unnorm_scores_i.log_softmax(-1)
-                    contrast_probs = contrast_probs * answer_mask.view(batch_size, -1)
-                    contrast_loss.append(contrast_probs[:, pos_indices[i]].unsqueeze(1))
-                    contrast_logits.append(contrast_probs)
+            if input_mask.sum().item() > 1:
+                for i in range(num_samples_q):
+                    # if input_mask[0][i].item() == 1:
+                        ignore_mask = torch.ones(batch_size, num_samples_q*num_samples_a).type_as(attention_mask)
+                        ignore_mask[:, pos_indices] = 0
+                        ignore_mask = ignore_mask * answer_mask.view(batch_size, -1)
+                        ignore_mask[:, pos_indices[i]] = 1
+                        ans_only_unnorm_scores_i = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
+                        contrast_probs = ans_only_unnorm_scores_i.log_softmax(-1)
+                        contrast_probs = contrast_probs * answer_mask.view(batch_size, -1)
+                        contrast_loss.append(contrast_probs[:, pos_indices[i]].unsqueeze(1))
+                        contrast_logits.append(contrast_probs)
             contrast_loss = torch.cat(contrast_loss, -1)
 
             losses.append(- contrast_loss.sum(-1))
