@@ -188,7 +188,6 @@ class ContrastiveEstimationPartitionBackoff(T5ForConditionalGeneration):
 
         return outputs
 
-
 class ContrastiveEstimationFullPartition(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
         super().__init__(config)
@@ -604,15 +603,6 @@ class ContrastiveEstimationAblationMultilabel(T5ForConditionalGeneration):
         lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
         lm_labels_flat_mask = lm_label_mask.view(-1)
 
-        extra_ignore_indices = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
-        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
-        pos_indices = pos_indices * num_samples_a + pos_indices
-        neg_indices = list(range(0, num_samples_a * num_samples_q))
-        for el in pos_indices.tolist() + (extra_ignore_indices[0] == 0).nonzero().squeeze(-1).tolist():
-            neg_indices.remove(el)
-        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
-
-        overlap_mask = (lm_labels_rep == self.eos_symbol_idx).long()
 
         lm_labels_flat[lm_labels_flat == -100] = 0
         log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
@@ -620,60 +610,73 @@ class ContrastiveEstimationAblationMultilabel(T5ForConditionalGeneration):
         log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
         logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
         output_len = decoder_attention_mask_rep.sum(-1)
-        log_ll = log_ll_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+        log_ll_avg = log_ll_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
                  (output_len.view(batch_size, -1, num_samples_a) + 1)
         logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
                  (output_len.view(batch_size, -1, num_samples_a) + 1)
         answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
-        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
-        pos_answer_mask = torch.zeros(batch_size, num_samples_a * num_samples_q).type_as(input_ids)
-        pos_answer_mask[:, pos_indices] = 1
-        pos_answer_mask = pos_answer_mask.view(batch_size, num_samples_q, num_samples_a)
-        comb_answer_mask = (answer_mask * pos_answer_mask).bool()
-        log_pll = log_ll.masked_select(comb_answer_mask)
-        loss = - log_pll.sum()
+        log_ll_avg = log_ll_avg.masked_fill(~answer_mask.bool(), 0)
 
-        if contrast_labels is not None:
-            for b in range(batch_size):
-                for k in range(num_samples_q):
-                    indices = (contrast_labels[b] == k).nonzero().squeeze(-1).tolist()
-                    all_combinations = list(product(indices, indices))
-                    all_combinations = torch.tensor([comb for comb in all_combinations if comb[0] != comb[1]]) \
-                        .type_as(attention_mask)
-                    if len(all_combinations) > 0:
-                        extra_ignore_indices[b][all_combinations[:, 0] * num_samples_a + all_combinations[:, 1]] = 0
-        else:
-            extra_ignore_indices = (decoder_attention_mask_rep.sum(-1) > 0).view(batch_size, num_samples_q*num_samples_a)
 
-        if self.loss_type == 'ce':# and (output_mask.sum().item() != 1):
-            comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
-            contrast_loss, contrast_logits = [], []
+        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
+        pos_indices = pos_indices * num_samples_a + pos_indices
+        neg_indices = list(range(0, num_samples_a * num_samples_q))
+        for el in pos_indices.tolist():
+            neg_indices.remove(el)
+        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
 
-            ignore_mask = extra_ignore_indices
-            ans_only_unnorm_scores_i = comptability_scores.masked_fill(~ignore_mask.bool(), -1e10)
-            contrast_probs_i = ans_only_unnorm_scores_i.log_softmax(-1)
-            contrast_loss = contrast_probs_i.masked_select(comb_answer_mask.view(batch_size, -1))
+        losses, score_fn = [], None
 
-            loss += - contrast_loss.sum(-1).mean()
-            outputs += [loss, lm_logprobs, contrast_logits]
+        if 'mle' in self.loss_type:
+            log_pll = log_ll_avg.view(batch_size, -1).index_select(1, pos_indices)
+            losses.append(- log_pll.sum(-1).unsqueeze(-1))
 
-        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
-            actual_num_a = output_mask.sum(-1)
-            ull = log_ll_flat.view(batch_size, num_samples_q*num_samples_a, ans_len)
-            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q*num_samples_a, ans_len), -1e7).exp()
+        if 'eos' in self.loss_type:
+            eos_mask = (lm_labels_rep == self.eos_symbol_idx).long()
+            logits_avg_eos = logits_flat.view(batch_size, num_samples_q, num_samples_a, ans_len) * eos_mask
+            logits_avg_eos = logits_avg_eos.view(batch_size, num_samples_q, num_samples_a, ans_len)
+            logits_avg_eos = logits_avg_eos.sum(-1)
+            score_fn = logits_avg_eos
+
+        if 'nonover' in self.loss_type:
+            neg_labels = decoder_input_ids.index_select(1, neg_indices)
+            neg_overlap_mask = (neg_labels != decoder_input_ids[:, 0, ].unsqueeze(1)) & (neg_labels != -100)
+            overlap_mask = torch.cat([decoder_attention_mask[:, 0, :].unsqueeze(1), neg_overlap_mask.long()], 1)
+            output_len_non_over = overlap_mask.sum(-1) + 1
+            logits_avg_non_over_all = logits_flat.view(-1, num_samples_q, num_samples_a, ans_len) * overlap_mask
+            logits_avg_non_over_all = logits_avg_non_over_all.view(-1, num_samples_a, ans_len)
+            logits_avg_non_over = logits_avg_non_over_all.sum(-1) / output_len_non_over
+            score_fn = logits_avg_non_over
+
+        if 'unnorm' in self.loss_type:
+            score_fn = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+
+        if 'lnorm' in self.loss_type:
+            score_fn = log_ll_avg.view(batch_size, num_samples_q * num_samples_a)
+
+        if score_fn is not None:
+            comptability_scores = score_fn
+
+            ans_only_unnorm_scores = comptability_scores.masked_fill(~answer_mask.view(batch_size, -1).bool(), -1e10)
+            contrast_probs = ans_only_unnorm_scores.log_softmax(-1)
+            contrast_probs = contrast_probs * answer_mask.view(batch_size, -1)
+            contrast_loss = contrast_probs.index_select(1, pos_indices)
+            losses.append(- contrast_loss.sum(-1).unsqueeze(-1))
+
+        if 'ull' in self.loss_type:
+            ull = log_ll_flat.view(batch_size, num_samples_q * num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q * num_samples_a, ans_len), -1e10).exp()
             log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+            log_ull = log_ull.sum(-1) / (output_len + 1).view(batch_size, -1).index_select(1, neg_indices)
             # neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
             # log_ull = log_ull * neg_overlap_mask.float()
-            log_ull = log_ull.sum(-1) / (output_len+1).view(batch_size, -1).index_select(1, neg_indices)
+            losses.append(- log_ull.sum(-1).unsqueeze(-1))
 
-            loss += - log_ull.sum(-1).mean()
+        loss = torch.cat(losses, 1).sum(-1).mean()
 
-            outputs += [loss, lm_logprobs]
-        else:
-            outputs += [loss, lm_logprobs]
+        outputs += [loss, lm_logprobs]
 
         return outputs
-
 
 class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type=['ce', 'mle']):
@@ -840,7 +843,6 @@ class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
 
         return outputs
 
-
 class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
         super().__init__(config)
@@ -1004,7 +1006,6 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
         outputs += [loss, lm_logprobs]
 
         return outputs
-
 
 class ContrastiveEstimationQnAMixture(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
@@ -1177,7 +1178,6 @@ class ContrastiveEstimationQnAMixture(T5ForConditionalGeneration):
 
         return outputs
 
-
 class ContrastiveEstimationPairwiseJoint(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
         super().__init__(config)
@@ -1185,8 +1185,9 @@ class ContrastiveEstimationPairwiseJoint(T5ForConditionalGeneration):
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type #'ull', 'ce'
+        self.loss_type = loss_type
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+        self.paired_attention = nn.Bilinear(4, 4, 1, bias=False)
 
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
@@ -1261,87 +1262,82 @@ class ContrastiveEstimationPairwiseJoint(T5ForConditionalGeneration):
         lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
         lm_labels_flat_mask = lm_label_mask.view(-1)
 
-        extra_ignore_indices = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
-        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
-        pos_indices = pos_indices * num_samples_a + pos_indices
-        neg_indices = list(range(0, num_samples_a * num_samples_q))
-        for el in pos_indices.tolist() + (extra_ignore_indices[0] == 0).nonzero().squeeze(-1).tolist():
-            neg_indices.remove(el)
-        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
-
-        overlap_mask = (lm_labels_rep == self.eos_symbol_idx).long()
-
         lm_labels_flat[lm_labels_flat == -100] = 0
         log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
         logits_flat = torch.gather(lm_logits.view(-1, lm_logprobs.size(-1)), -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
         log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
         logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
         output_len = decoder_attention_mask_rep.sum(-1)
-        log_ll = log_ll_flat.view(batch_size,-1, num_samples_a, ans_len).sum(-1) / \
+        log_ll_avg = log_ll_flat.view(batch_size,-1, num_samples_a, ans_len).sum(-1) / \
                  (output_len.view(batch_size, -1, num_samples_a) + 1)
         logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
                  (output_len.view(batch_size, -1, num_samples_a) + 1)
         answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
-        pos_answer_mask = torch.zeros(batch_size, num_samples_a * num_samples_q).type_as(input_ids)
-        pos_answer_mask[:, pos_indices] = 1
-        pos_answer_mask = pos_answer_mask.view(batch_size, num_samples_q, num_samples_a)
-        comb_answer_mask = (answer_mask * pos_answer_mask).bool()
+        log_ll_avg = log_ll_avg.masked_fill(~answer_mask.bool(), 0)
 
-        logits_avg = logits_avg.masked_fill(~answer_mask.bool(), -1e10)
+        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
+        pos_indices = pos_indices * num_samples_a + pos_indices
+        neg_indices = list(range(0, num_samples_a * num_samples_q))
+        for el in pos_indices.tolist():
+            neg_indices.remove(el)
+        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
 
-        log_ll = log_ll.view(batch_size, num_samples_q, num_samples_a)
+        losses, score_fn = [], None
 
-        log_pll = log_ll.view(batch_size, -1).index_select(1, pos_indices)
-        loss = - log_pll.mean()
+        if 'mle' in self.loss_type:
+            log_pll = log_ll_avg.view(batch_size, -1).index_select(1, pos_indices)
+            losses.append(- log_pll.sum(-1).unsqueeze(-1))
 
-        extra_ignore_indices = (input_ids.sum(-1) > 0).unsqueeze(-1).repeat(1, 1, num_samples_a). \
-            view(batch_size, num_samples_q*num_samples_a).long()
+        if 'eos' in self.loss_type:
+            eos_mask = (lm_labels_rep == self.eos_symbol_idx).long()
+            logits_avg_eos = logits_flat.view(batch_size, num_samples_q, num_samples_a, ans_len) * eos_mask
+            logits_avg_eos = logits_avg_eos.view(batch_size, num_samples_q, num_samples_a, ans_len)
+            logits_avg_eos = logits_avg_eos.sum(-1)
+            score_fn = logits_avg_eos
 
-        comptability_scores = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+        if 'nonover' in self.loss_type:
+            neg_labels = decoder_input_ids.index_select(1, neg_indices)
+            neg_overlap_mask = (neg_labels != decoder_input_ids[:, 0, ].unsqueeze(1)) & (neg_labels != -100)
+            overlap_mask = torch.cat([decoder_attention_mask[:, 0, :].unsqueeze(1), neg_overlap_mask.long()], 1)
+            output_len_non_over = overlap_mask.sum(-1) + 1
+            logits_avg_non_over_all = logits_flat.view(-1, num_samples_q, num_samples_a, ans_len) * overlap_mask
+            logits_avg_non_over_all = logits_avg_non_over_all.view(-1, num_samples_a, ans_len)
+            logits_avg_non_over = logits_avg_non_over_all.sum(-1) / output_len_non_over
+            score_fn = logits_avg_non_over
 
-        if self.loss_type == 'ce':
-            contrast_loss = []
+        if 'unnorm' in self.loss_type:
+            score_fn = logits_avg.view(batch_size, num_samples_q * num_samples_a)
+
+        if 'lnorm' in self.loss_type:
+            score_fn = log_ll_avg.view(batch_size, num_samples_q * num_samples_a).exp()
+
+        if score_fn is not None:
+            comptability_scores = score_fn
+            contrast_loss, contrast_logits = [], []
             for b in range(batch_size):
                 if output_mask[b].sum().item() == 2 and input_mask[b].sum().item() == 2:
-                    scores = comptability_scores[b].unsqueeze(0) + comptability_scores[b].unsqueeze(1)
+                    scores = comptability_scores[b].unsqueeze(0) * comptability_scores[b].unsqueeze(1)
                     upper_tri_indices = torch.ones(comptability_scores[b].size(0), comptability_scores[b].size(0))
                     partition = scores[torch.triu(upper_tri_indices, diagonal=1) == 1]
-                    partition = torch.logsumexp(partition, 0)
-                    gold_score = scores[0, -1]
-                    c_loss = - gold_score + partition
-                    #c_loss = 1 - gold_score + partition
-                    #c_loss = max(0, c_loss)
-                    contrast_loss.append(c_loss.unsqueeze(-1))
-                elif output_mask[b].sum().item() == 2 and input_mask[b].sum().item() == 1:
-                    batch_loss = []
-                    for i in range(num_samples_q):
-                        if input_mask[b][i].item() == 1:
-                            ignore_mask = torch.zeros(num_samples_q, num_samples_a).type_as(attention_mask)
-                            ignore_mask[i, :] = 1
-                            ignore_mask = ignore_mask.view(num_samples_q * num_samples_a) * extra_ignore_indices[b]
-                            ans_only_unnorm_scores = comptability_scores[b].masked_fill(~ignore_mask.bool(), -1e10)
-                            contrast_probs = ans_only_unnorm_scores.log_softmax(-1)
-                            batch_loss.append(-contrast_probs[pos_indices[i]].unsqueeze(0))
-                    contrast_loss.append(torch.cat(batch_loss))
+                    norm_partition = partition.log_softmax(-1)
+                    contrast_loss.append(norm_partition[3].unsqueeze(0))
 
             if len(contrast_loss) > 0:
-                loss += torch.cat(contrast_loss).sum(-1)
-            outputs += [loss, lm_logprobs, []]
+                contrast_loss = torch.cat(contrast_loss, 0)
+                losses.append(- contrast_loss.unsqueeze(-1))
 
-        elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):
-            actual_num_a = output_mask.sum(-1)
-            ull = log_ll_flat.view(batch_size, num_samples_q*num_samples_a, ans_len)
-            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q*num_samples_a, ans_len), -1e7).exp()
+        if 'ull' in self.loss_type:
+            ull = log_ll_flat.view(batch_size, num_samples_q * num_samples_a, ans_len)
+            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q * num_samples_a, ans_len), -1e10).exp()
             log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
+            log_ull = log_ull.sum(-1) / (output_len + 1).view(batch_size, -1).index_select(1, neg_indices)
             # neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
             # log_ull = log_ull * neg_overlap_mask.float()
-            log_ull = log_ull.sum(-1) / (output_len+1).view(batch_size, -1).index_select(1, neg_indices)
+            losses.append(- log_ull.sum(-1).unsqueeze(-1))
 
-            loss += - log_ull.sum(-1).mean()
+        loss = torch.cat(losses, 1).sum(-1).mean()
 
-            outputs += [loss, lm_logprobs]
-        else:
-            outputs += [loss, lm_logprobs]
+        outputs += [loss, lm_logprobs]
 
         return outputs
 
