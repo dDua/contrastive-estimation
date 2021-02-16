@@ -233,6 +233,16 @@ def process_all_contexts_quoref(tokenizer, instance, max_passage_len, lowercase=
     context_info.append({"tokens": full_context_ids, "sentence_offsets": [len(full_context_ids)]})
     return context_info
 
+
+# def process_all_contexts_drop(tokenizer, instance, max_passage_len, lowercase=True):
+#     """This is an exact copy of `process_all_contexts_quoref` unless that function changes."""
+#     context_info = []
+#     line = instance["context"] if lowercase else instance["context"].lower()
+#     full_context_ids = tokenizer.encode_plus(line)["input_ids"][:max_passage_len]
+#     context_info.append({"tokens": full_context_ids, "sentence_offsets": [len(full_context_ids)]})
+#     return context_info
+
+
 def process_all_contexts_torque(tokenizer, instance, max_passage_len, lowercase=True):
     context_info = []
     line = instance["passage"] if lowercase else instance["passage"].lower()
@@ -501,6 +511,8 @@ def get_dataset(logger, dataset, dataset_cache, dataset_path, split='train', mod
         all_instances = get_qasrl_instances(dataset, dataset_path, mode)
     elif "quoref" in dataset.__class__.__name__.lower():
         all_instances = get_quoref_instances(dataset, dataset_path, mode)
+    elif "dropdataset" in dataset.__class__.__name__.lower():
+        all_instances = get_drop_instances(dataset, dataset_path, mode)
     elif "torque" in dataset.__class__.__name__.lower():
         all_instances = get_torque_instances(dataset, dataset_path, mode)
 
@@ -562,6 +574,35 @@ def get_quoref_instances(dataset, dataset_path, mode):
 
             except Exception:
                 traceback.print_exc()
+    return all_instances
+
+
+def get_drop_instances(dataset_class, dataset_path, mode):
+    """This is called by `get_dataset` function; idea is to return a list of `all_instances`.
+    Internally this will use the dataset_class.get_instance function to get instance(s) from each input to that function
+    We could input a single (Q,A,P) tuple and get one or more outputs.
+
+    Parameters:
+    -----------
+    dataset_class: dataset_class, for example: data_processing_drop.DROPQADataBaseline
+    dataset_path: Path to json file containing dataset
+    mode: "train" or "valid"
+    """
+    all_instances = []
+    with open(dataset_path, 'r') as f:
+        dataset = json.load(f)
+
+    for para_id, para_info in dataset.items():
+        passage = para_info["passage"]
+        qa_pairs = para_info["qa_pairs"]
+        example = {"passage": passage, "qa_pairs": qa_pairs, "mode": mode}
+        # These would be multiple instances, one for each QA. Maybe more that one instance per QA as well
+        instances = dataset_class.get_instance(example)
+        if instances is not None:
+            if isinstance(instances, list):
+                all_instances.extend(instances)
+            else:
+                all_instances.append(instances)
     return all_instances
 
 

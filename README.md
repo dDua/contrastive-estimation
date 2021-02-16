@@ -5,6 +5,9 @@
 # Uses parameters from configs/t5_quoref_config.py
 
 python run_quoref_answering_model.py
+
+# For multi-gpu training
+python -m torch.distributed.launch --nproc_per_node=8 run_quoref_answering_model.py  
 ```
 
 ### Conda env create

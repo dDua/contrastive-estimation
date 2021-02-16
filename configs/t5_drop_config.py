@@ -10,17 +10,17 @@ def get_arguments():
     parser = argparse.ArgumentParser()
 
     ## Basic parameters
-    parser.add_argument("--dataset_path", type=str, default="/home/ddua/data/quoref/")
-    parser.add_argument("--dataset_cache", default="/extra/ucinlp0/ddua/quoref/cache/")
+    parser.add_argument("--dataset_path", type=str, default="datasets/drop/")
+    parser.add_argument("--dataset_cache", default="datasets/drop/cache/")
     parser.add_argument("--predict_file", default="")
-    parser.add_argument("--output_dir", default="/mnt/750GB/data/hotpotqa/demo_genqa", type=str)
+    parser.add_argument("--output_dir", default="/tmp/drop-test", type=str)
     parser.add_argument("--qdmr_path", type=str, default="/mnt/750GB/data/Break-dataset/QDMR-high-level/train.csv")
     parser.add_argument("--do_train", action='store_true', default=True)
     parser.add_argument("--do_predict", action='store_true')
-    #parser.add_argument("--train_split_name", default="demo_train")
-    #parser.add_argument("--dev_split_name", default="demo_dev")
-    parser.add_argument("--train_split_name", default="quoref-train-v0.1")
-    parser.add_argument("--dev_split_name", default="quoref-dev-v0.1")
+    # parser.add_argument("--train_split_name", default="drop_sample_train")
+    # parser.add_argument("--dev_split_name", default="drop_sample_train")
+    parser.add_argument("--train_split_name", default="drop_dataset_train")
+    parser.add_argument("--dev_split_name", default="drop_dataset_dev")
     parser.add_argument("--distributed", action='store_true', default=True)
     parser.add_argument("--lazy", default=False)
     parser.add_argument("--input_type", type=str, default="Q")
@@ -29,7 +29,7 @@ def get_arguments():
     # parser.add_argument("--model_checkpoint", type=str, default="/mnt/750GB/data/ropes/ropes_answering_model_large_v2")
     # parser.add_argument("--model_checkpoint", type=str, default="/mnt/750GB/data/ropes/ropes_base_2/")
     parser.add_argument("--model_checkpoint", type=str, default="t5-small")
-    parser.add_argument("--lowercase", action='store_true', default=True)
+    parser.add_argument("--lowercase", action='store_true', default=False)
     parser.add_argument("--ans_coef", type=float, default=1.0)
     parser.add_argument("--qg_coef", type=float, default=1.0)
     parser.add_argument("--nce_coef", type=float, default=5.0)
@@ -38,7 +38,7 @@ def get_arguments():
 
     # Preprocessing/decoding-related parameters
     parser.add_argument('--max_question_length', type=int, default=50)
-    parser.add_argument('--max_context_length', type=int, default=512)
+    parser.add_argument('--max_context_length', type=int, default=650)
     parser.add_argument('--max_output_length', type=int, default=20)
     parser.add_argument('--num_beams', type=int, default=4)
     parser.add_argument("--append_another_bos", action='store_true', default=False)
@@ -50,7 +50,7 @@ def get_arguments():
                         help="Batch size per GPU/CPU for training.")
     parser.add_argument("--predict_batch_size", default=1, type=int,
                         help="Batch size per GPU/CPU for evaluation.")
-    parser.add_argument("--lr", default=1e-04, type=float,
+    parser.add_argument("--lr", default=5e-5, type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--warmup_proportion", default=0.01, type=float,
                         help="Weight decay if we apply some.")
