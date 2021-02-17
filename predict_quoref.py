@@ -10,10 +10,6 @@ from model.answering_model import T5QA, T5QAInfer
 from data.data_processing_ropes import RopesQADataBaseline, RopesQADataComparisonContrastGen3, RopesQADataContrastMineY, RopesQADataContrastMineX, RopesQADataContrastMineXv2
 from data.data_processing_all_pairs_v2 import HotpotQADataAllPairs
 from data.data_processing_quoref import QuorefQADataBaseline
-<<<<<<< HEAD
-=======
-# from data.data_processing_torque import TorqueQADataBaseline
->>>>>>> e2884dc... quoref baseline seems to be running fine
 from data.data_processing_contrast import HotpotQADataComparisonContrastGenV3, HotpotQADataIntersectionContrastGenV3
 from transformers import T5Tokenizer
 from utils import get_multi_span_metrics
