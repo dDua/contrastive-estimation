@@ -851,7 +851,7 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type #'ull', 'ce'
+        self.loss_type = loss_type #'mle', 'lnorm', 'unnorm', 'eos', 'nonover', 'ull'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
 
 
