@@ -17,7 +17,7 @@ class QuorefQADataBaseline(HotpotQADataBase):
     def get_instance(self, instance):
         context_info = process_all_contexts_quoref(self.tokenizer, instance, self.args.max_context_length -
                                              int(self.args.max_question_length) - int(self.args.max_output_length),
-                                             add_sent_ends=True, lowercase=self.args.lowercase)
+                                             lowercase=self.args.lowercase)
 
         all_instances = []
         for qa_pair in instance["qas"]:

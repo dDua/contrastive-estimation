@@ -2,6 +2,7 @@ import re
 import numpy as np
 import string
 import torch
+from scripts.drop import get_metrics
 import torch.nn.functional as F
 from transformers.modeling_utils import BeamHypotheses
 
@@ -185,3 +186,23 @@ def generate_beam_search(model, encoder_input_ids, decoder_input_ids, max_length
     return decoded
 
 
+def get_multi_span_metrics(tokenizer, gold_ids, generated_ids):
+    ans_symbol, eos_symbol = tokenizer.convert_tokens_to_ids(["<answer>", "<eos>"])
+    gold_ids, generated_ids = gold_ids.tolist(), generated_ids.tolist()
+    if ans_symbol in gold_ids:
+        gold_ids.remove(ans_symbol)
+    if ans_symbol in generated_ids:
+        generated_ids.remove(ans_symbol)
+
+    original_answer_b = tokenizer.decode(gold_ids, clean_up_tokenization_spaces=True)
+    original_answer_list_b = [org_ans.strip() for org_ans in original_answer_b.split("<multi>")]
+
+    if eos_symbol in generated_ids:
+        out_end_len = generated_ids.index(eos_symbol)
+    else:
+        out_end_len = -1
+    generated_answer_b = tokenizer.decode(generated_ids[:out_end_len],
+                                          clean_up_tokenization_spaces=True)
+    generated_answer_list_b = [gen_ans.strip() for gen_ans in generated_answer_b.split("<multi>")]
+    scores = get_metrics(generated_answer_list_b, original_answer_list_b)
+    return scores, (original_answer_list_b, generated_answer_list_b)
