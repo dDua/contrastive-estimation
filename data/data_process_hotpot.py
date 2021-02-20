@@ -64,7 +64,7 @@ class HotpotQADataComparisonAblationsv2(HotpotQADataBase):
 
         else:
             if "new_questions" in instance and len(instance["new_questions"]) > 0:
-                for new_q, new_a in zip(instance["new_questions"], instance["new_questions"]):
+                for new_q, new_a in zip(instance["new_questions"], instance["new_answers"]):
                     if self.args.lowercase:
                         new_q = new_q.lower()
                         new_a = new_a.lower()
@@ -257,7 +257,7 @@ class HotpotQADataComparisonAblationsv1(HotpotQADataBase):
 
         else:
             if "new_questions" in instance and len(instance["new_questions"]) > 0:
-                for new_q, new_a in zip(instance["new_questions"], instance["new_questions"]):
+                for new_q, new_a in zip(instance["new_questions"], instance["new_answers"]):
                     if self.args.lowercase:
                         new_q = new_q.lower()
                         new_a = new_a.lower()
