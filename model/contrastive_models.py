@@ -502,9 +502,9 @@ class ContrastiveEstimationFullPartitionExp(T5ForConditionalGeneration):
                         contrast_probs = contrast_probs * answer_mask.view(batch_size, -1)
                         contrast_loss.append(contrast_probs[:, pos_indices[i]].unsqueeze(1))
                         contrast_logits.append(contrast_probs)
-            contrast_loss = torch.cat(contrast_loss, -1)
-
-            losses.append(- contrast_loss.sum(-1))
+                if len(contrast_loss) > 0:
+                    contrast_loss = torch.cat(contrast_loss, -1)
+                    losses.append(- contrast_loss.sum(-1))
 
         if 'ull' in self.loss_type:
             ull = log_ll_flat.view(batch_size, num_samples_q * num_samples_a, ans_len)
