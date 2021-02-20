@@ -965,10 +965,10 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
             neg_overlap_mask = (neg_labels != decoder_input_ids[:, 0, ].unsqueeze(1)) & (neg_labels != -100)
             overlap_mask = torch.cat([decoder_attention_mask[:, 0, :].unsqueeze(1), neg_overlap_mask.long()], 1)
             output_len_non_over = overlap_mask.sum(-1) + 1
-            logits_avg_non_over_all = logits_flat.view(-1, num_samples_q, num_samples_a, ans_len) * overlap_mask
-            logits_avg_non_over_all = logits_avg_non_over_all.view(-1, num_samples_a, ans_len)
-            logits_avg_non_over = logits_avg_non_over_all.sum(-1) / output_len_non_over
-            score_fn = logits_avg_non_over
+            logits_avg_non_over_all = logits_flat.view(batch_size, num_samples_q, num_samples_a, ans_len) * overlap_mask.unsqueeze(1)
+            logits_avg_non_over_all = logits_avg_non_over_all.view(batch_size, num_samples_q, num_samples_a, ans_len)
+            logits_avg_non_over = logits_avg_non_over_all.sum(-1) / output_len_non_over.unsqueeze(1)
+            score_fn = logits_avg_non_over.view(batch_size, num_samples_q * num_samples_a)
 
         if 'unnorm' in self.loss_type:
             score_fn = logits_avg.view(batch_size, num_samples_q * num_samples_a)
