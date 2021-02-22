@@ -1011,10 +1011,10 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
             losses.append(- contrast_loss.sum(-1).unsqueeze(-1))
 
         if 'ull' in self.loss_type:
-            ull = log_ll_flat.view(batch_size, num_samples_q * num_samples_a, ans_len)
-            ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q * num_samples_a, ans_len), -1e10).exp()
-            log_ull = (1 - ull + 1e-12).log().index_select(1, neg_indices)
-            log_ull = log_ull.sum(-1) / (output_len + 1).view(batch_size, -1).index_select(1, neg_indices)
+            ull = log_ll_flat.masked_fill(lm_labels_flat_mask, -1e10).view(batch_size, num_samples_q, num_samples_a, ans_len)[:, :include_samples_q]
+            log_ull = (1 - ull.exp() + 1e-12).log()
+            log_ull = log_ull.sum(-1) / (output_len[:, :include_samples_q] + 1)
+            log_ull = log_ull.view(batch_size, -1).index_select(1, neg_indices)
             # neg_overlap_mask = overlap_mask.index_select(1, neg_indices)
             # log_ull = log_ull * neg_overlap_mask.float()
             losses.append(- log_ull.sum(-1).unsqueeze(-1))
@@ -1163,24 +1163,28 @@ class ContrastiveEstimationQnAMixture(T5ForConditionalGeneration):
             comptability_scores = score_fn
             contrast_loss, contrast_logits = [], []
 
-            for i in range(num_samples_q):
-                if input_mask[0][i].item() == 1:
-                    ignore_mask = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
-                    ignore_mask[:, pos_indices] = 0
-                    ignore_mask = ignore_mask * answer_mask.view(batch_size, -1)
-                    ignore_mask[:, pos_indices[i]] = 1
-                    ignore_mask1, ignore_mask2 = ignore_mask.clone(), ignore_mask.clone()
-                    ignore_mask1[:, 2] = 0
-                    ignore_mask2[:, 1] = 0
-                    ans_only_unnorm_scores_1 = comptability_scores.masked_fill(~ignore_mask1.bool(), -1e10)
-                    contrast_probs_1 = ans_only_unnorm_scores_1.log_softmax(-1)
-                    contrast_loss.append(contrast_probs_1[:, pos_indices[i]].unsqueeze(1))
-                    ans_only_unnorm_scores_2 = comptability_scores.masked_fill(~ignore_mask2.bool(), -1e10)
-                    contrast_probs_2 = ans_only_unnorm_scores_2.log_softmax(-1)
-                    contrast_loss.append(contrast_probs_2[:, pos_indices[i]].unsqueeze(1))
+            if num_samples_a*num_samples_q > 1:
+                for i in range(num_samples_q):
+                    if input_mask[0][i].item() == 1:
+                        ignore_mask = torch.ones(batch_size, num_samples_q * num_samples_a).type_as(attention_mask)
+                        ignore_mask[:, pos_indices] = 0
+                        ignore_mask = ignore_mask * answer_mask.view(batch_size, -1)
+                        ignore_mask[:, pos_indices[i]] = 1
+                        ignore_mask1, ignore_mask2 = ignore_mask.clone(), ignore_mask.clone()
+                        try:
+                            ignore_mask1[:, 2] = 0
+                            ignore_mask2[:, 1] = 0
+                        except Exception:
+                            print()
+                        ans_only_unnorm_scores_1 = comptability_scores.masked_fill(~ignore_mask1.bool(), -1e10)
+                        contrast_probs_1 = ans_only_unnorm_scores_1.log_softmax(-1)
+                        contrast_loss.append(contrast_probs_1[:, pos_indices[i]].unsqueeze(1))
+                        ans_only_unnorm_scores_2 = comptability_scores.masked_fill(~ignore_mask2.bool(), -1e10)
+                        contrast_probs_2 = ans_only_unnorm_scores_2.log_softmax(-1)
+                        contrast_loss.append(contrast_probs_2[:, pos_indices[i]].unsqueeze(1))
 
-            contrast_loss = torch.cat(contrast_loss, -1)
-            losses.append(- contrast_loss.sum(-1).unsqueeze(-1))
+                contrast_loss = torch.cat(contrast_loss, -1)
+                losses.append(- contrast_loss.sum(-1).unsqueeze(-1))
 
         if 'ull' in self.loss_type:
             ull = log_ll_flat.view(batch_size, num_samples_q * num_samples_a, ans_len)
