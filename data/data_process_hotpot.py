@@ -6,6 +6,12 @@ from data.data_processing import HotpotQADataBase
 from data.utils import *
 
 
+"""
+y_only: Used in answer conditional case when only num_cont_ans_cand answer candidates (in args) are added to output_*
+x_only: Used in Question conditional case when only num_cont_ques_cand question candidates (in args) are added to input_ids
+x_types, y_types: These are dataset specific params than can be used to defined the type of questions 
+                   (e.g., generated, mined, topk etc.) can be specified. For a default case they need not be used.
+"""
 class HotpotQADataComparisonAblationsv2(HotpotQADataBase):
     def __init__(self, logger, args, tokenizer, lazy=False, x_only=False, y_only=False, y_types='topk',
                  x_types=None):
@@ -345,6 +351,7 @@ class HotpotQADataComparisonAblationsv1(HotpotQADataBase):
         max_o = self.args.max_output_length
         num_qa_pairs = len(instances["input_ids"])
         if mode == "train":
+            # Answer Conditional (num_qs = 1)
             if self.y_only:
                 # check if any topks
                 a_inds = list(range(num_qa_pairs, min(len(instances["output_src"]), num_qa_pairs + self.args.num_cont_ans_cand)))
@@ -356,9 +363,11 @@ class HotpotQADataComparisonAblationsv1(HotpotQADataBase):
                 a_inds = sorted(a_inds)
 
                 max_qs, max_as = [0], a_inds[:self.args.num_cont_ans_cand]
+            # Question Conditional (num_as = 1)
             elif self.x_only:
                 max_qs, max_as = self.args.num_ques_cand, [0]
             else:
+                #  Multiple neighborhood case where num_qa and num_as both are > 1
                 if self.x_types in ["mine2", "gen"]:
                     max_qs, max_as = list(range(self.args.num_cont_ques_cand)), list(range(self.args.num_cont_ques_cand))
                 elif self.x_types == "mine3":
