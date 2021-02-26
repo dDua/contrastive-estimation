@@ -854,7 +854,7 @@ class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
 
 class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
-                 loss_type=['mle'], include_aug_q=False):
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
