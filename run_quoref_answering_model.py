@@ -14,7 +14,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, TensorDataset
 from ignite.engine import Engine, Events
 from ignite.handlers import ModelCheckpoint
-from ignite.metrics import Accuracy, Loss, MetricsLambda, RunningAverage
+from ignite.metrics import Accuracy, Loss, MetricsLambda, RunningAverage, MeanAbsoluteError
 from ignite.contrib.handlers import ProgressBar, PiecewiseLinear
 from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger, OutputHandler, OptimizerParamsHandler
 from transformers import T5Tokenizer, T5ForConditionalGeneration
@@ -22,7 +22,7 @@ from transformers import AdamW
 from model.answering_model import T5QA
 from configs.t5_quoref_config import get_arguments as get_arguments_quoref
 from data.data_processing_quoref import QuorefQADataBaseline
-from configs.t5_torque_config import get_arguments as get_arguments_torque
+from utils import get_multi_span_metrics
 
 logger = logging.getLogger(__file__)
 
@@ -103,6 +103,7 @@ def train():
     # Evaluation function and evaluator (evaluator output is the input of the metrics)
     def inference(engine, batch):
         model.eval()
+        eos_symbol = tokenizer.convert_tokens_to_ids("<eos>")
         batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
         with torch.no_grad():
             batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
@@ -112,38 +113,30 @@ def train():
             pos_input_ids = input_ids[:, 0, :].unsqueeze(1)
             pos_attention_mask = attention_mask[:, 0, :].unsqueeze(1)
             hidden = model(pos_input_ids, pos_attention_mask, encode_only=True)
-            generated_ans_indices, generated_probs = model(pos_input_ids, attention_mask=pos_attention_mask,
+            generate_indices, generated_probs = model(pos_input_ids, attention_mask=pos_attention_mask,
                             encoded_hidden_states=hidden, max_len=answer_mask.size(1))
 
             ans_labels = answer_output.contiguous().view(-1)
 
             answer_logits_masked = torch.masked_select(generated_probs.reshape(-1, generated_probs.size(-1)),
-                                                       answer_mask.reshape(-1,1).bool()).view(-1, generated_probs.size(-1))
+                                       answer_mask.reshape(-1,1).bool()).view(-1, generated_probs.size(-1))
             answer_labels_masked = torch.masked_select(ans_labels, answer_mask.view(-1).bool())
 
-            if random.uniform(0, 1) <= args.output_prob:
+            answer_input[answer_input == -100] = 0
+            batch_size, num_questions, _ = input_ids.size()
+            em, f1 = [], []
 
-                generated_ans_indices = generated_ans_indices.tolist()
-                gold_ans_indices = answer_input.tolist()
-                try:
-                    gen_eos_idx = generated_ans_indices[0].index("<eos>")
-                except Exception:
-                    gen_eos_idx = -1
+            for b in range(batch_size):
+                (em_scores, f1_score), predictions = get_multi_span_metrics(tokenizer, answer_input[b],
+                                                                          generate_indices[b])
+                em.append(em_scores)
+                f1.append(f1_score)
 
-                try:
-                    gold_eos_idx = gold_ans_indices[0].index(-100)
-                except Exception:
-                    gold_eos_idx = -1
+                if random.uniform(0, 1) <= args.output_prob:
+                    queue.put((json.dumps(predictions[0]), json.dumps(predictions[1])))
 
-                generated_answer = tokenizer.decode(generated_ans_indices[0][:gen_eos_idx], skip_special_tokens=True,
-                                                    clean_up_tokenization_spaces=True)
-                answer_input[answer_input == -100] = 0
-                original_answer = tokenizer.decode(gold_ans_indices[0][:gold_eos_idx], skip_special_tokens=True,
-                                                   clean_up_tokenization_spaces=True)
-
-                queue.put((json.dumps(generated_answer), json.dumps(original_answer)))
-
-            return (answer_logits_masked, answer_labels_masked)
+            return (torch.tensor(em).view(-1), 1 + torch.tensor(f1).view(-1)),\
+                   (torch.ones(batch_size, num_questions).view(-1))
 
     evaluator = Engine(inference)
 
@@ -174,7 +167,8 @@ def train():
     # Prepare metrics - note how we compute distributed metrics
     RunningAverage(output_transform=lambda x: x).attach(trainer, "loss")
     metrics = {
-        "ans_accuracy": Accuracy(output_transform=lambda x: (x[0], x[1]))
+        "em": Accuracy(output_transform=lambda x: (x[0][0], x[1])),
+        "f1": MeanAbsoluteError(output_transform=lambda x: (x[0][1], x[1]))
     }
 
     for name, metric in metrics.items():
