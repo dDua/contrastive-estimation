@@ -10,14 +10,16 @@ from scripts.script_utils import sample_sequences_v2, generate_beam_search
 from transformers import T5ForConditionalGeneration
 
 class ContrastiveEstimationPartitionBackoff(T5ForConditionalGeneration):
-    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type #'ull', 'ce'
+        self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+        self.include_aug_q = include_aug_q
 
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
@@ -189,15 +191,16 @@ class ContrastiveEstimationPartitionBackoff(T5ForConditionalGeneration):
         return outputs
 
 class ContrastiveEstimationFullPartition(T5ForConditionalGeneration):
-    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type #'ull', 'ce'
+        self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
-
+        self.include_aug_q = include_aug_q
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
         batch_size, num_samples, seq_len = attention_mask.size()
@@ -355,14 +358,16 @@ class ContrastiveEstimationFullPartition(T5ForConditionalGeneration):
         return outputs
 
 class ContrastiveEstimationFullPartitionExp(T5ForConditionalGeneration):
-    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type #'ull', 'ce'
+        self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+        self.include_aug_q = include_aug_q
 
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
@@ -522,14 +527,16 @@ class ContrastiveEstimationFullPartitionExp(T5ForConditionalGeneration):
         return outputs
 
 class ContrastiveEstimationAblationMultilabel(T5ForConditionalGeneration):
-    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type #'ull', 'ce'
+        self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+        self.include_aug_q = include_aug_q
 
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
@@ -681,7 +688,7 @@ class ContrastiveEstimationAblationMultilabel(T5ForConditionalGeneration):
 
 class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
-                 loss_type=['mle'], include_aug_q=False):
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
@@ -860,7 +867,7 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type
+        self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
         self.include_aug_q = include_aug_q
 
@@ -1027,13 +1034,13 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
 
 class ContrastiveEstimationQnAMixture(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
-                 loss_type=['mle'], include_aug_q=False):
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type
+        self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
         self.include_aug_q = include_aug_q
 
@@ -1202,15 +1209,16 @@ class ContrastiveEstimationQnAMixture(T5ForConditionalGeneration):
         return outputs
 
 class ContrastiveEstimationPairwiseJoint(T5ForConditionalGeneration):
-    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type
+        self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
-        self.paired_attention = nn.Bilinear(4, 4, 1, bias=False)
+        self.include_aug_q = include_aug_q
 
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):

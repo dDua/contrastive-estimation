@@ -33,6 +33,11 @@ class HotpotQADataComparisonAblationsv2(HotpotQADataBase):
             return text
 
     def get_instance(self, instance):
+        """
+        :param instance: Single raw json blob from the data file
+        :return: input_ids : List[List[token ids]] (num_questions, context_length)
+                 output_* : List[List[token ids]] (num_answers, answer_length)
+        """
         bos_token, eos_token = self.tokenizer.convert_tokens_to_ids(["<bos>", "<eos>"])
         final_instances = []
         context_info = process_all_contexts(self.tokenizer, instance, int(self.args.max_context_length / 2) -
@@ -310,6 +315,13 @@ class HotpotQADataComparisonAblationsv1(HotpotQADataBase):
         return data_point
 
     def pad_instances(self, instances, mode):
+        """
+        :param instances: List of all instances in the whole data split
+        :param mode: string to differentiate b/w "train", "valid"
+        :return: A dict with keys as model_inputs and padded values
+                                        {"input_ids" : List of size (num_instances, num_questions, context_length),
+                                         "output_*" : List of size (num_instances, num_answers, answer_length})
+        """
         max_l = min(self.args.max_context_length, max(len(y) for x in instances["input_ids"] for y in x))
         max_o = min(self.args.max_output_length + 1, max(len(y) for x in instances["output_src"] for y in x))
 
@@ -346,15 +358,22 @@ class HotpotQADataComparisonAblationsv1(HotpotQADataBase):
 
         return instances
 
-    def pad_instances_lazy(self, instances, mode):
+    def pad_instances_lazy(self, instance, mode):
+        """
+        :param instance: Takes a single instance at a time
+        :param mode: string to differentiate b/w "train", "valid"
+        :return: A dict with keys as model_inputs and padded values
+                                                {"input_ids" : List of size (num_questions, context_length),
+                                                 "output_*" : List of size (num_answers, answer_length})
+        """
         max_l = self.args.max_context_length
         max_o = self.args.max_output_length
-        num_qa_pairs = len(instances["input_ids"])
+        num_qa_pairs = len(instance["input_ids"])
         if mode == "train":
             # Answer Conditional (num_qs = 1)
             if self.y_only:
                 # check if any topks
-                a_inds = list(range(num_qa_pairs, min(len(instances["output_src"]), num_qa_pairs + self.args.num_cont_ans_cand)))
+                a_inds = list(range(num_qa_pairs, min(len(instance["output_src"]), num_qa_pairs + self.args.num_cont_ans_cand)))
                 # add mined
                 a_inds += [0] + list(range(1, num_qa_pairs))
                 a_inds = list(set(a_inds))
@@ -385,12 +404,12 @@ class HotpotQADataComparisonAblationsv1(HotpotQADataBase):
 
             padding = -100 if name == "output_src" or name == "output_tgt" else 0
 
-            for k, sequence in enumerate(instances[name]):
+            for k, sequence in enumerate(instance[name]):
                 sequence += [padding] * (max_n - len(sequence))
-                instances[name][k] = sequence[:max_n]
-            instances[name] += [[padding] * max_n] * (len(max_ns) - len(instances[name]))
-            instances[name] = [instances[name][seq_ind] for seq_ind in max_ns]
-        return instances
+                instance[name][k] = sequence[:max_n]
+            instance[name] += [[padding] * max_n] * (len(max_ns) - len(instance[name]))
+            instance[name] = [instance[name][seq_ind] for seq_ind in max_ns]
+        return instance
 
     def pad_and_tensorize_dataset(self, instances, mode="train"):
         if self.lazy:
