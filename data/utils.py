@@ -644,8 +644,8 @@ def get_data_loaders(dataset, include_train, lazy):
 
     if lazy:
         if include_train:
-            train_dataset = LazyCustomDataset(datasets_raw['train'], dataset)
-        valid_dataset = LazyCustomDataset(datasets_raw['valid'], dataset)
+            train_dataset = LazyCustomDataset(datasets_raw['train'], dataset, mode="train")
+        valid_dataset = LazyCustomDataset(datasets_raw['valid'], dataset, mode="valid")
 
     else:
         datasets = {
@@ -732,16 +732,17 @@ def get_reasoning_type(paragraphs, answer, type):
 
 
 class LazyCustomDataset(Dataset):
-    def __init__(self, instances, dataset):
+    def __init__(self, instances, dataset, mode="train"):
         self.instances = instances
         self.tokenizer = dataset.tokenizer
         self.dataset = dataset
+        self.mode = mode
         # for inst in self.instances:
         #     self.dataset.build_segments(inst)
 
     def __getitem__(self, index):
         new_item = self.dataset.build_segments(self.instances[index])
-        tensor_instance = self.dataset.pad_and_tensorize_dataset(new_item)
+        tensor_instance = self.dataset.pad_and_tensorize_dataset(new_item, mode=self.mode)
         # del new_item
         return tuple(tensor_instance)
 
