@@ -214,10 +214,12 @@ class RopesQADataAblationv1(HotpotQADataBase):
 
             all_instances.append({"input_ids": input_ids, "output_src": output_src,
                                   "output_tgt": output_tgt, "output_mask": output_mask})
-            all_instances.append({"input_ids": [input_ids[1], input_ids[0], input_ids[1:]],
-                                  "output_src": [output_src[1], output_src[0], output_src[1:]],
-                                  "output_tgt": [output_tgt[1], output_tgt[0], output_tgt[1:]],
-                                  "output_mask": [output_mask[1], output_mask[0], output_mask[1:]]})
+
+            if len(pairs) > 1:
+                all_instances.append({"input_ids": [input_ids[1], input_ids[0], input_ids[1:]],
+                                      "output_src": [output_src[1], output_src[0], output_src[1:]],
+                                      "output_tgt": [output_tgt[1], output_tgt[0], output_tgt[1:]],
+                                      "output_mask": [output_mask[1], output_mask[0], output_mask[1:]]})
 
         return all_instances
 
