@@ -506,6 +506,7 @@ class ContrastiveEstimationFullPartitionExp(T5ForConditionalGeneration):
                     contrast_loss = torch.cat(contrast_loss, -1)
                     losses.append(- contrast_loss.sum(-1))
 
+
         if 'ull' in self.loss_type:
             ull = log_ll_flat.view(batch_size, num_samples_q * num_samples_a, ans_len)
             ull = ull.masked_fill(lm_label_mask.view(batch_size, num_samples_q * num_samples_a, ans_len), -1e10).exp()
@@ -681,7 +682,7 @@ class ContrastiveEstimationAblationMultilabel(T5ForConditionalGeneration):
 
 class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
     def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
-                 loss_type=['mle'], include_aug_q=False):
+                 loss_type=['mle'], include_aug_q=True):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
@@ -690,7 +691,6 @@ class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
         self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
         self.include_aug_q = include_aug_q
-
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
         batch_size, num_samples, seq_len = attention_mask.size()
@@ -787,7 +787,7 @@ class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
         else:
             pos_indices = torch.zeros(1).type_as(input_ids)
             neg_indices = torch.arange(1, num_samples_a).type_as(input_ids)
-            include_samples_a = 1
+            include_samples_a = 1       
 
         losses, score_fn = [], None
 
@@ -801,6 +801,7 @@ class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
             logits_avg_eos = logits_avg_eos.view(batch_size, num_samples_q, num_samples_a, ans_len)
             logits_avg_eos = logits_avg_eos.sum(-1)
             score_fn = logits_avg_eos[:, :, :include_samples_a].view(batch_size, -1)
+
 
         if 'nonover' in self.loss_type:
             neg_labels = decoder_input_ids.index_select(1, neg_indices)
@@ -817,6 +818,7 @@ class ContrastiveEstimationQuestionCond(T5ForConditionalGeneration):
 
         if 'lnorm' in self.loss_type:
             score_fn = log_ll_avg[:, :, :include_samples_a].view(batch_size, -1)
+
 
         if score_fn is not None:
             comptability_scores = score_fn
@@ -860,7 +862,7 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
         self.ans_symbol_idx = ans_sym_id
         self.max_answer_length = max_ans_len
         self.tokenizer = tokenizer
-        self.loss_type = loss_type
+        self.loss_type = loss_type  #'mle', 'lnorm', 'unnorm', 'eos', 'nonover', 'ull'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
         self.include_aug_q = include_aug_q
 
@@ -949,6 +951,7 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
             pos_indices = torch.zeros(1).type_as(input_ids)
             neg_indices = torch.arange(1, num_samples_a).type_as(input_ids)
             include_samples_q = 1
+
 
         lm_labels_flat[lm_labels_flat == -100] = 0
         log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
@@ -1122,6 +1125,7 @@ class ContrastiveEstimationQnAMixture(T5ForConditionalGeneration):
         log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
         logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
         output_len = decoder_attention_mask_rep.sum(-1)
+
         log_ll_avg = log_ll_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
                  (output_len.view(batch_size, -1, num_samples_a) + 1)
         logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
