@@ -997,10 +997,10 @@ class ContrastiveEstimationAnswerCond(T5ForConditionalGeneration):
             score_fn = logits_avg_non_over[:, :include_samples_q, :].view(batch_size, -1)
 
         if 'unnorm' in self.loss_type:
-            score_fn = logits_avg[:, :, :include_samples_q].view(batch_size, -1)
+            score_fn = logits_avg[:, :include_samples_q, :].view(batch_size, -1)
 
         if 'lnorm' in self.loss_type:
-            score_fn = log_ll_avg[:, :, :include_samples_q].view(batch_size, -1)
+            score_fn = log_ll_avg[:, :include_samples_q, :].view(batch_size, -1)
 
         if score_fn is not None:
             comptability_scores = score_fn
