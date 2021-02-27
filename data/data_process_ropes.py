@@ -30,13 +30,12 @@ class RopesQADataAblationv2(HotpotQADataBase):
             all_qa_pairs.append((question, answer, qa_pair["id"]))
             instance_info[qa_pair["id"]] = qa_pair
 
-        all_qa_pairs = get_contrast_qa(all_qa_pairs, fixed_group_size=2, force_group_size=False)
+        aligned_qa_pairs = get_contrast_qa(all_qa_pairs, fixed_group_size=2, force_group_size=False)
 
         all_instances = []
 
-        for pairs in all_qa_pairs:
-            input_ids, output_src, output_mask, output_tgt = [], [], [], []
-            for qap in pairs:
+        if instance["mode"] != "train":
+            for qap in all_qa_pairs:
                 question, orig_answer, qid = qap
                 if self.args.lowercase:
                     question, orig_answer = question.lower(), orig_answer.lower()
@@ -50,39 +49,62 @@ class RopesQADataAblationv2(HotpotQADataBase):
                 answer_tokens = answer_encoded["input_ids"]
                 answer_mask = answer_encoded["attention_mask"]
 
-                input_ids += [[bos_token] + context_info[0]["tokens"] + question_tokens[:-1]]
-                output_src += [answer_tokens[:-1]]
-                output_mask += [answer_mask[:-1]]
-                output_tgt += [answer_tokens[1:]]
+                input_ids = [[bos_token] + context_info[0]["tokens"] + question_tokens[:-1]]
+                output_src = [answer_tokens[:-1]]
+                output_mask = [answer_mask[:-1]]
+                output_tgt = [answer_tokens[1:]]
+                all_instances.append({"input_ids": input_ids, "output_src": output_src,
+                                      "output_tgt": output_tgt, "output_mask": output_mask})
+        else:
+            for pairs in aligned_qa_pairs:
+                input_ids, output_src, output_mask, output_tgt = [], [], [], []
+                for qap in pairs:
+                    question, orig_answer, qid = qap
+                    if self.args.lowercase:
+                        question, orig_answer = question.lower(), orig_answer.lower()
 
-            opt_answer_candidates = detect_possible_answers([p[0] for p in pairs], [p[1] for p in pairs])
-            if len(pairs) == 1:
-                orig_answer_toks = set(orig_answer.strip().lower().split())
-                orig_answer_toks.difference_update(["a", "an", "the"])
-                backoff_cands = None
-                instance = instance_info[pairs[0][-1]]
-                if len(instance["mined_candidates"]) == 2:
-                    backoff_cands = instance["mined_candidates"]
-                elif len(instance["topk_candidates"]) == 2:
-                    backoff_cands = instance["topk_candidates"]
+                    question = "{0} {1} {2}".format(self.special_tokens[0], question, "<eos>")
+                    answer = "{0} {1} {2}".format(self.special_tokens[1], orig_answer, "<eos>")
 
-                if backoff_cands:
-                    for mc in backoff_cands:
-                        mc_toks = set(mc.lower().strip().split())
-                        mc_toks.difference_update(["a", "an", "the"])
-                        if len(orig_answer_toks.difference(mc_toks)) == 0:
-                            continue
+                    question_encoded = self.tokenizer.encode_plus(question, max_length=self.args.max_question_length)
+                    question_tokens = question_encoded["input_ids"]
+                    answer_encoded = self.tokenizer.encode_plus(answer, max_length=self.args.max_output_length)
+                    answer_tokens = answer_encoded["input_ids"]
+                    answer_mask = answer_encoded["attention_mask"]
 
-                        opt_answer_candidates.append(mc)
+                    input_ids += [[bos_token] + context_info[0]["tokens"] + question_tokens[:-1]]
+                    output_src += [answer_tokens[:-1]]
+                    output_mask += [answer_mask[:-1]]
+                    output_tgt += [answer_tokens[1:]]
 
-            for opt_cand in opt_answer_candidates:
-                opt_encoded = self.tokenizer.encode_plus("{0} {1} {2}".format(self.special_tokens[1],
-                                      opt_cand.lower(), "<eos>"), max_length=self.args.max_output_length)
-                output_src += [opt_encoded["input_ids"][:-1]]
-                output_mask += [opt_encoded["attention_mask"][:-1]]
-                output_tgt += [opt_encoded["input_ids"][1:]]
+                opt_answer_candidates = detect_possible_answers([p[0] for p in pairs], [p[1] for p in pairs])
+                if len(pairs) == 1:
+                    orig_answer_toks = set(orig_answer.strip().lower().split())
+                    orig_answer_toks.difference_update(["a", "an", "the"])
+                    backoff_cands = None
+                    qa_instance = instance_info[pairs[0][-1]]
+                    if len(qa_instance["mined_candidates"]) == 2:
+                        backoff_cands = qa_instance["mined_candidates"]
+                    elif len(qa_instance["topk_candidates"]) == 2:
+                        backoff_cands = qa_instance["topk_candidates"]
 
-            all_instances.append({"input_ids": input_ids, "output_src": output_src,
+                    if backoff_cands:
+                        for mc in backoff_cands:
+                            mc_toks = set(mc.lower().strip().split())
+                            mc_toks.difference_update(["a", "an", "the"])
+                            if len(orig_answer_toks.difference(mc_toks)) == 0:
+                                continue
+
+                            opt_answer_candidates.append(mc)
+
+                for opt_cand in opt_answer_candidates:
+                    opt_encoded = self.tokenizer.encode_plus("{0} {1} {2}".format(self.special_tokens[1],
+                                          opt_cand.lower(), "<eos>"), max_length=self.args.max_output_length)
+                    output_src += [opt_encoded["input_ids"][:-1]]
+                    output_mask += [opt_encoded["attention_mask"][:-1]]
+                    output_tgt += [opt_encoded["input_ids"][1:]]
+
+                all_instances.append({"input_ids": input_ids, "output_src": output_src,
                                   "output_tgt": output_tgt, "output_mask": output_mask})
 
         return all_instances
@@ -160,13 +182,12 @@ class RopesQADataAblationv1(HotpotQADataBase):
             all_qa_pairs.append((question, answer, qa_pair["id"]))
             instance_info[qa_pair["id"]] = qa_pair
 
-        all_qa_pairs = get_contrast_qa(all_qa_pairs, fixed_group_size=2, force_group_size=False)
+        aligned_qa_pairs = get_contrast_qa(all_qa_pairs, fixed_group_size=2, force_group_size=False)
 
         all_instances = []
 
-        for pairs in all_qa_pairs:
-            input_ids, output_src, output_mask, output_tgt = [], [], [], []
-            for qap in pairs:
+        if instance["mode"] != "train":
+            for qap in all_qa_pairs:
                 question, orig_answer, qid = qap
                 if self.args.lowercase:
                     question, orig_answer = question.lower(), orig_answer.lower()
@@ -180,46 +201,69 @@ class RopesQADataAblationv1(HotpotQADataBase):
                 answer_tokens = answer_encoded["input_ids"]
                 answer_mask = answer_encoded["attention_mask"]
 
-                input_ids += [[bos_token] + context_info[0]["tokens"] + question_tokens[:-1]]
-                output_src += [answer_tokens[:-1]]
-                output_mask += [answer_mask[:-1]]
-                output_tgt += [answer_tokens[1:]]
+                input_ids = [[bos_token] + context_info[0]["tokens"] + question_tokens[:-1]]
+                output_src = [answer_tokens[:-1]]
+                output_mask = [answer_mask[:-1]]
+                output_tgt = [answer_tokens[1:]]
+                all_instances.append({"input_ids": input_ids, "output_src": output_src,
+                                      "output_tgt": output_tgt, "output_mask": output_mask})
+        else:
+            for pairs in aligned_qa_pairs:
+                input_ids, output_src, output_mask, output_tgt = [], [], [], []
+                for qap in pairs:
+                    question, orig_answer, qid = qap
+                    if self.args.lowercase:
+                        question, orig_answer = question.lower(), orig_answer.lower()
 
-            opt_answer_candidates = detect_possible_answers([p[0] for p in pairs], [p[1] for p in pairs])
-            if len(pairs) == 1:
-                orig_answer_toks = set(orig_answer.strip().lower().split())
-                orig_answer_toks.difference_update(["a", "an", "the"])
-                backoff_cands = None
-                instance = instance_info[pairs[0][-1]]
-                if len(instance["mined_candidates"]) == 2:
-                    backoff_cands = instance["mined_candidates"]
-                elif len(instance["topk_candidates"]) == 2:
-                    backoff_cands = instance["topk_candidates"]
+                    question = "{0} {1} {2}".format(self.special_tokens[0], question, "<eos>")
+                    answer = "{0} {1} {2}".format(self.special_tokens[1], orig_answer, "<eos>")
 
-                if backoff_cands:
-                    for mc in backoff_cands:
-                        mc_toks = set(mc.lower().strip().split())
-                        mc_toks.difference_update(["a", "an", "the"])
-                        if len(orig_answer_toks.difference(mc_toks)) == 0:
-                            continue
+                    question_encoded = self.tokenizer.encode_plus(question, max_length=self.args.max_question_length)
+                    question_tokens = question_encoded["input_ids"]
+                    answer_encoded = self.tokenizer.encode_plus(answer, max_length=self.args.max_output_length)
+                    answer_tokens = answer_encoded["input_ids"]
+                    answer_mask = answer_encoded["attention_mask"]
 
-                        opt_answer_candidates.append(mc)
+                    input_ids += [[bos_token] + context_info[0]["tokens"] + question_tokens[:-1]]
+                    output_src += [answer_tokens[:-1]]
+                    output_mask += [answer_mask[:-1]]
+                    output_tgt += [answer_tokens[1:]]
 
-            for opt_cand in opt_answer_candidates:
-                opt_encoded = self.tokenizer.encode_plus("{0} {1} {2}".format(self.special_tokens[1],
-                                      opt_cand.lower(), "<eos>"), max_length=self.args.max_output_length)
-                output_src += [opt_encoded["input_ids"][:-1]]
-                output_mask += [opt_encoded["attention_mask"][:-1]]
-                output_tgt += [opt_encoded["input_ids"][1:]]
+                opt_answer_candidates = detect_possible_answers([p[0] for p in pairs], [p[1] for p in pairs])
+                if len(pairs) == 1:
+                    orig_answer_toks = set(orig_answer.strip().lower().split())
+                    orig_answer_toks.difference_update(["a", "an", "the"])
+                    backoff_cands = None
+                    qa_instance = instance_info[pairs[0][-1]]
+                    if len(qa_instance["mined_candidates"]) == 2:
+                        backoff_cands = qa_instance["mined_candidates"]
+                    elif len(qa_instance["topk_candidates"]) == 2:
+                        backoff_cands = qa_instance["topk_candidates"]
 
-            all_instances.append({"input_ids": input_ids, "output_src": output_src,
-                                  "output_tgt": output_tgt, "output_mask": output_mask})
+                    if backoff_cands:
+                        for mc in backoff_cands:
+                            mc_toks = set(mc.lower().strip().split())
+                            mc_toks.difference_update(["a", "an", "the"])
+                            if len(orig_answer_toks.difference(mc_toks)) == 0:
+                                continue
 
-            if len(pairs) > 1:
-                all_instances.append({"input_ids": [input_ids[1], input_ids[0], input_ids[1:]],
-                                      "output_src": [output_src[1], output_src[0], output_src[1:]],
-                                      "output_tgt": [output_tgt[1], output_tgt[0], output_tgt[1:]],
-                                      "output_mask": [output_mask[1], output_mask[0], output_mask[1:]]})
+                            opt_answer_candidates.append(mc)
+
+                for opt_cand in opt_answer_candidates:
+                    opt_encoded = self.tokenizer.encode_plus("{0} {1} {2}".format(self.special_tokens[1],
+                                          opt_cand.lower(), "<eos>"), max_length=self.args.max_output_length)
+                    output_src += [opt_encoded["input_ids"][:-1]]
+                    output_mask += [opt_encoded["attention_mask"][:-1]]
+                    output_tgt += [opt_encoded["input_ids"][1:]]
+
+                all_instances.append({"input_ids": input_ids, "output_src": output_src,
+                                      "output_tgt": output_tgt, "output_mask": output_mask})
+
+                if len(pairs) > 1:
+                    all_instances.append({"input_ids": [input_ids[1], input_ids[0], input_ids[1:]],
+                                          "output_src": [output_src[1], output_src[0], output_src[1:]],
+                                          "output_tgt": [output_tgt[1], output_tgt[0], output_tgt[1:]],
+                                          "output_mask": [output_mask[1], output_mask[0], output_mask[1:]]})
 
         return all_instances
 
