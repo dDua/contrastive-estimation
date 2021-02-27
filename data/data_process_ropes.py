@@ -1,6 +1,7 @@
 import copy
 import numpy as np
 import math
+from nltk import word_tokenize
 from data.data_processing import HotpotQADataBase
 from data.utils import *
 
@@ -90,12 +91,16 @@ class RopesQADataAblationv2(HotpotQADataBase):
 
                     if backoff_cands:
                         for mc in backoff_cands:
-                            mc_toks = set(mc.lower().strip().split())
-                            mc_toks.difference_update(["a", "an", "the"])
-                            if len(orig_answer_toks.difference(mc_toks)) == 0:
+                            mc_toks = set(word_tokenize(mc.lower()))
+                            mc_toks.difference_update(["a", "an", "the", "'s"])
+                            # if len(orig_answer_toks.difference(mc_toks)) == 0:
+                            #     continue
+                            if len(orig_answer_toks.intersection(mc_toks)) > 0:
                                 continue
 
-                            opt_answer_candidates.append(mc)
+                            if mc.lower().strip() not in opt_answer_candidates:
+                                opt_answer_candidates.append(mc)
+
 
                 for opt_cand in opt_answer_candidates:
                     opt_encoded = self.tokenizer.encode_plus("{0} {1} {2}".format(self.special_tokens[1],
@@ -229,25 +234,39 @@ class RopesQADataAblationv1(HotpotQADataBase):
                     output_mask += [answer_mask[:-1]]
                     output_tgt += [answer_tokens[1:]]
 
-                opt_answer_candidates = detect_possible_answers([p[0] for p in pairs], [p[1] for p in pairs])
+                # opt_answer_candidates = detect_possible_answers([p[0] for p in pairs], [p[1] for p in pairs])
+                opt_answer_candidates = []
                 if len(pairs) == 1:
-                    orig_answer_toks = set(orig_answer.strip().lower().split())
-                    orig_answer_toks.difference_update(["a", "an", "the"])
+                    org_ans_proc = orig_answer.strip().lower().replace("a ", "").replace("an ", "").replace("the ", "")
+                    orig_answer_toks = set(word_tokenize(org_ans_proc))
+                    orig_answer_toks.difference_update(["'s"])
                     backoff_cands = None
                     qa_instance = instance_info[pairs[0][-1]]
                     if len(qa_instance["mined_candidates"]) == 2:
                         backoff_cands = qa_instance["mined_candidates"]
                     elif len(qa_instance["topk_candidates"]) == 2:
                         backoff_cands = qa_instance["topk_candidates"]
+                    elif len(qa_instance["topk_candidates"]) > 2:
+                        backoff_cands = qa_instance["topk_candidates"]
+                        for q, bc in enumerate(backoff_cands):
+                            backoff_cands[q] = bc.strip().lower().replace("a ", "").replace("an ", "").replace("the ", "")
+                        backoff_cands = list(set(backoff_cands))
 
                     if backoff_cands:
                         for mc in backoff_cands:
-                            mc_toks = set(mc.lower().strip().split())
-                            mc_toks.difference_update(["a", "an", "the"])
-                            if len(orig_answer_toks.difference(mc_toks)) == 0:
+                            mc_proc = mc.lower().strip().replace("a ", "").replace("an ", "").replace("the ", "")
+                            mc_toks = set(word_tokenize(mc_proc))
+                            mc_toks.difference_update(["'s", "not"])
+
+                            if mc.startswith("not ") or orig_answer.startswith("not "):
+                                if mc_proc == org_ans_proc:
+                                    continue
+                            elif (len(orig_answer_toks.difference(mc_toks)) == 0 or \
+                                     len(mc_toks.difference(orig_answer_toks)) == 0):
                                 continue
 
-                            opt_answer_candidates.append(mc)
+                            if mc.lower().strip() not in opt_answer_candidates:
+                                opt_answer_candidates.append(mc)
 
                 for opt_cand in opt_answer_candidates:
                     opt_encoded = self.tokenizer.encode_plus("{0} {1} {2}".format(self.special_tokens[1],
@@ -256,14 +275,12 @@ class RopesQADataAblationv1(HotpotQADataBase):
                     output_mask += [opt_encoded["attention_mask"][:-1]]
                     output_tgt += [opt_encoded["input_ids"][1:]]
 
-                all_instances.append({"input_ids": input_ids, "output_src": output_src,
-                                      "output_tgt": output_tgt, "output_mask": output_mask})
+                for k in range(len(input_ids)):
+                    all_instances.append({"input_ids": [input_ids[k]] + input_ids[:k] + input_ids[k + 1:],
+                                          "output_src": [output_src[k]] + output_src[:k] + output_src[k + 1:],
+                                          "output_tgt": [output_tgt[k]] + output_tgt[:k] + output_tgt[k + 1:],
+                                          "output_mask": [output_mask[k]] + output_mask[:k] + output_mask[k + 1:]})
 
-                if len(pairs) > 1:
-                    all_instances.append({"input_ids": [input_ids[1], input_ids[0], input_ids[1:]],
-                                          "output_src": [output_src[1], output_src[0], output_src[1:]],
-                                          "output_tgt": [output_tgt[1], output_tgt[0], output_tgt[1:]],
-                                          "output_mask": [output_mask[1], output_mask[0], output_mask[1:]]})
 
         return all_instances
 

@@ -763,7 +763,7 @@ def detect_possible_answers(questions, answers):
         for i, cand in enumerate(addition_cand):
             if cand is not None and a in cand.lower():
                 addition_cand[i] = None
-    addition_cand = [a for a in addition_cand if a]
+    addition_cand = [a.lower() for a in addition_cand if a]
     return addition_cand
 
 def transitive_closure(items):
@@ -854,7 +854,13 @@ def get_contrast_qa(qa_pairs, max_group_size=3, fixed_group_size=2, force_group_
                 q_r = len(q_set_j.intersection(q_set_i)) / float(len(q_set_j))
                 a_p = len(a_set_i.intersection(a_set_j)) / float(len(a_set_i))
                 a_r = len(a_set_j.intersection(a_set_i)) / float(len(a_set_j))
-
+                # detect for not
+                i_minus_j = a_set_i.difference(a_set_j)
+                j_minus_i = a_set_j.difference(a_set_i)
+                if (len(i_minus_j) == 0 and len(j_minus_i) == 1 and list(j_minus_i)[0] == "not") or \
+                        (len(i_minus_j) == 1 and len(j_minus_i) == 0 and list(i_minus_j)[0] == "not"):
+                    a_p = 0
+                    a_r = 0
 
                 scores_q = 0 if q_p == 0 or q_r == 0 else 2*q_r*q_p/(q_p+q_r)
                 # scores_a = 0 if a_p == 1 and a_r == 1 else 1
