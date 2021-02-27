@@ -95,8 +95,8 @@ class HotpotQADataBase(object):
 
         return tensors
 
-    def get_data_loaders(self, train=True, lazy=False):
-        return get_data_loaders(self, include_train=train, lazy=lazy)
+    def get_data_loaders(self, train=True, lazy=False, use_cache=True):
+        return get_data_loaders(self, include_train=train, lazy=lazy, use_cache=use_cache)
 
     def get_reasoning_label(self, inst_id):
         rtype = self.reasoning_ann[inst_id] if inst_id in self.reasoning_ann else 2
