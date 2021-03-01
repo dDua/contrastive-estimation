@@ -307,16 +307,6 @@ class ContrastiveEstimationFullPartition(T5ForConditionalGeneration):
             logits_avg_eos = logits_avg_eos.sum(-1)
             score_fn = logits_avg_eos
 
-        if 'nonover' in self.loss_type:
-            neg_labels = decoder_input_ids.index_select(1, neg_indices)
-            neg_overlap_mask = (neg_labels != decoder_input_ids[:, 0, ].unsqueeze(1)) & (neg_labels != -100)
-            overlap_mask = torch.cat([decoder_attention_mask[:, 0, :].unsqueeze(1), neg_overlap_mask.long()], 1)
-            output_len_non_over = overlap_mask.sum(-1) + 1
-            logits_avg_non_over_all = logits_flat.view(-1, num_samples_q, num_samples_a, ans_len) * overlap_mask
-            logits_avg_non_over_all = logits_avg_non_over_all.view(-1, num_samples_a, ans_len)
-            logits_avg_non_over = logits_avg_non_over_all.sum(-1) / output_len_non_over
-            score_fn = logits_avg_non_over
-
         if 'unnorm' in self.loss_type:
             score_fn = logits_avg.view(batch_size, num_samples_q * num_samples_a)
 
@@ -1353,7 +1343,8 @@ class ContrastiveEstimationPairwiseJoint(T5ForConditionalGeneration):
                 if output_mask[b].sum().item() == 2 and input_mask[b].sum().item() == 2:
                     scores = comptability_scores[b].unsqueeze(0) * comptability_scores[b].unsqueeze(1)
                     upper_tri_indices = torch.ones(comptability_scores[b].size(0), comptability_scores[b].size(0))
-                    partition = scores[torch.triu(upper_tri_indices, diagonal=1) == 1]
+                    # partition = scores[torch.triu(upper_tri_indices, diagonal=1) == 1]
+                    partition = scores[torch.triu(upper_tri_indices, diagonal=0) == 1]
                     norm_partition = partition.log_softmax(-1)
                     contrast_loss.append(norm_partition[3].unsqueeze(0))
 
