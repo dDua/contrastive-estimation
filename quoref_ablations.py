@@ -64,7 +64,7 @@ def train():
     model = model_class.from_pretrained(args.model_checkpoint, **{"ans_sym_id": out_symbol_idx,
                                                                   "max_ans_len": args.max_output_length,
                                                                   "tokenizer": tokenizer,
-                                                                  "loss_type": "ull"
+                                                                  "loss_type": "ce"
                                                                 })
     model.to(args.device)
 
