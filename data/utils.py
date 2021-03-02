@@ -480,9 +480,9 @@ def get_qdmr_annotations(file_path):
     return qdmr_map
 
 
-def get_dataset(logger, dataset, dataset_cache, dataset_path, split='train', mode='train'):
+def get_dataset(logger, dataset, dataset_cache, dataset_path, split='train', mode='train', use_cache=True):
     dataset_cache = dataset_cache + split + '_' + dataset.__class__.__name__ + '_' + dataset.tokenizer.__class__.__name__
-    if dataset_cache and os.path.isfile(dataset_cache):
+    if use_cache and dataset_cache and os.path.isfile(dataset_cache):
         logger.info("Load tokenized dataset from cache at %s", dataset_cache)
         data = torch.load(dataset_cache)
         if mode == "train":
@@ -504,10 +504,9 @@ def get_dataset(logger, dataset, dataset_cache, dataset_path, split='train', mod
     elif "torque" in dataset.__class__.__name__.lower():
         all_instances = get_torque_instances(dataset, dataset_path, mode)
 
-    if dataset_cache:
+    if use_cache and dataset_cache:
         torch.save(all_instances, dataset_cache)
-
-    logger.info("Dataset cached at %s", dataset_cache)
+        logger.info("Dataset cached at %s", dataset_cache)
 
     return all_instances
 
@@ -628,24 +627,26 @@ def get_ropes_instances(dataset, dataset_path, mode):
             traceback.print_exc()
     return all_instances
 
-def get_data_loaders(dataset, include_train, lazy):
+def get_data_loaders(dataset, include_train, lazy, use_cache=True):
     logger = dataset.logger
     args = dataset.args
     datasets_raw = {}
     if include_train:
         logger.info("Loading training data")
         datasets_raw['train'] = get_dataset(logger, dataset, args.dataset_cache, args.dataset_path,
-                                            args.train_split_name, mode='train')
+                                            args.train_split_name, mode='train', use_cache=use_cache)
     logger.info("Loading validation data")
     datasets_raw['valid'] = get_dataset(logger, dataset, args.dataset_cache, args.dataset_path,
-                                        args.dev_split_name, mode='valid')
+                                        args.dev_split_name, mode='valid', use_cache=use_cache)
+
+    logger.info("Number of instance in train: {0}".format(len(datasets_raw['train'])))
+    logger.info("Number of instance in valid: {0}".format(len(datasets_raw['valid'])))
 
     logger.info("Build inputs and labels")
-
     if lazy:
         if include_train:
-            train_dataset = LazyCustomDataset(datasets_raw['train'], dataset)
-        valid_dataset = LazyCustomDataset(datasets_raw['valid'], dataset)
+            train_dataset = LazyCustomDataset(datasets_raw['train'], dataset, mode="train")
+        valid_dataset = LazyCustomDataset(datasets_raw['valid'], dataset, mode="valid")
 
     else:
         datasets = {
@@ -732,16 +733,17 @@ def get_reasoning_type(paragraphs, answer, type):
 
 
 class LazyCustomDataset(Dataset):
-    def __init__(self, instances, dataset):
+    def __init__(self, instances, dataset, mode="train"):
         self.instances = instances
         self.tokenizer = dataset.tokenizer
         self.dataset = dataset
+        self.mode = mode
         # for inst in self.instances:
         #     self.dataset.build_segments(inst)
 
     def __getitem__(self, index):
         new_item = self.dataset.build_segments(self.instances[index])
-        tensor_instance = self.dataset.pad_and_tensorize_dataset(new_item)
+        tensor_instance = self.dataset.pad_and_tensorize_dataset(new_item, mode=self.mode)
         # del new_item
         return tuple(tensor_instance)
 

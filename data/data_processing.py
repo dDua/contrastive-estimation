@@ -76,7 +76,7 @@ class HotpotQADataBase(object):
 
         return data_point
 
-    def pad_and_tensorize_dataset(self, instances):
+    def pad_and_tensorize_dataset(self, instances, mode="train"):
         padding = 0
         max_l = min(self.args.max_context_length, max(len(x) for x in instances["input_ids"]))
         max_q = min(self.args.max_question_length, max(len(x) for x in instances["question_ids"]))
@@ -95,8 +95,8 @@ class HotpotQADataBase(object):
 
         return tensors
 
-    def get_data_loaders(self, train=True, lazy=False):
-        return get_data_loaders(self, include_train=train, lazy=lazy)
+    def get_data_loaders(self, train=True, lazy=False, use_cache=True):
+        return get_data_loaders(self, include_train=train, lazy=lazy, use_cache=use_cache)
 
     def get_reasoning_label(self, inst_id):
         rtype = self.reasoning_ann[inst_id] if inst_id in self.reasoning_ann else 2

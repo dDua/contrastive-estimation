@@ -13,6 +13,7 @@ from data.data_processing_quoref import QuorefQADataBaseline
 #from data.data_processing_torque import TorqueQADataBaseline
 from data.data_processing_contrast import HotpotQADataComparisonContrastGenV3, HotpotQADataIntersectionContrastGenV3
 from transformers import T5Tokenizer
+from utils import get_multi_span_metrics
 
 logger = logging.getLogger(__file__)
 
@@ -40,9 +41,8 @@ args = get_arguments()
 
 def inference_baseline():
     tokenizer = T5Tokenizer.from_pretrained(args.model_checkpoint)
-    #dataset_classes = [HotpotQADataAllPairs,RopesQADataBaseline,QuorefQADataBaseline,TorqueQADataBaseline]
-    dataset_classes = [HotpotQADataAllPairs,RopesQADataBaseline,QuorefQADataBaseline]
-    dataset_class = dataset_classes[2]
+    dataset_classes = [HotpotQADataAllPairs, RopesQADataBaseline, QuorefQADataBaseline]
+    dataset_class = dataset_classes[-1]
     tokenizer.add_special_tokens({"bos_token": "<bos>", "eos_token": "<eos>", "pad_token": "<pad>",
                                   "cls_token": "<cls>",
                                   "additional_special_tokens": dataset_class.special_tokens})
@@ -53,7 +53,8 @@ def inference_baseline():
 
     model.to(torch.device("cuda"))
     model.eval()
-    predictions = []
+
+    em, f1, total = 0, 0, 0
     eos_symbol = tokenizer.convert_tokens_to_ids("<eos>")
     val_loader, valid_sampler = dataset.get_data_loaders(train=False, lazy=args.lazy)
     fw = open("log_quoref_preds.txt", 'w')
@@ -70,30 +71,23 @@ def inference_baseline():
 
 
         hidden = model(input_ids, attention_mask, encode_only=True)
-        predicted_answer, _ = model(input_ids, attention_mask=attention_mask, encoder_outputs=[hidden],
+        generate_indices, _ = model(input_ids, attention_mask=attention_mask, encoder_outputs=[hidden],
                                     max_len=args.max_output_length, generate_answer=True)
 
-        for k, (input, output) in enumerate(zip(answer_output.tolist(), predicted_answer.tolist())):
-            if -100 in input:
-                input_masked = input[:input.index(-100)]
-            else:
-                input_masked = input
-
-            if eos_symbol in output:
-                out_end_len = output.index(eos_symbol) + 1
-            else:
-                out_end_len = -1 
-            output_masked = output[:out_end_len]
-            pred = tokenizer.decode(output_masked, skip_special_tokens=True, clean_up_tokenization_spaces=True).lower().strip()
-            gold = tokenizer.decode(input_masked, skip_special_tokens=True, clean_up_tokenization_spaces=True).lower().strip()
-            predictions.append((pred, gold))
-            fw.write("{0}|{1}|{2}\n".format(ids[k], json.dumps(pred), json.dumps(gold)))
+        answer_input[answer_input == -100] = 0
+        for b in range(input_ids.size(0)):
+            (em_scores, f1_score), predictions = get_multi_span_metrics(tokenizer, answer_input[b],
+                                                                    generate_indices[b])
+            em += em_scores
+            f1 += f1_score
+            total += 1
+            fw.write("{0}|{1}|{2}\n".format(ids[b], json.dumps(predictions[0]), json.dumps(predictions[1])))
 
         if i % 20 == 0:
-            print(evaluate(predictions))
+            print(em/float(total), f1/float(total))
             fw.flush()
 
-    return evaluate(predictions)
+    return print(em/float(total), f1/float(total))
 
 
 def joint_inference():
