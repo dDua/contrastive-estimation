@@ -51,4 +51,4 @@ class QuorefAnswerScorer:
                                     decoder_input_ids=output_src,
                                     lm_labels=output_tgt,
                                     decoder_attention_mask=output_mask)
-        print(model_outputs)
+        return model_outputs
