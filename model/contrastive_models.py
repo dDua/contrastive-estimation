@@ -1334,14 +1334,17 @@ class ContrastiveEstimationPairwiseJoint(T5ForConditionalGeneration):
             score_fn = logits_avg.view(batch_size, num_samples_q * num_samples_a)
 
         if 'lnorm' in self.loss_type:
-            score_fn = log_ll_avg.view(batch_size, num_samples_q * num_samples_a).exp()
+            score_fn = log_ll_avg.view(batch_size, num_samples_q * num_samples_a)
 
         if score_fn is not None:
             comptability_scores = score_fn
             contrast_loss, contrast_logits = [], []
             for b in range(batch_size):
                 if output_mask[b].sum().item() == 2 and input_mask[b].sum().item() == 2:
-                    scores = comptability_scores[b].unsqueeze(0) * comptability_scores[b].unsqueeze(1)
+                    # scores = comptability_scores[b].unsqueeze(0) * comptability_scores[b].unsqueeze(1)
+                    scores = comptability_scores[b].unsqueeze(0) + comptability_scores[b].unsqueeze(1)
+                    if 'lnorm' in self.loss_type:
+                        scores = scores.exp()
                     upper_tri_indices = torch.ones(comptability_scores[b].size(0), comptability_scores[b].size(0))
                     # partition = scores[torch.triu(upper_tri_indices, diagonal=1) == 1]
                     partition = scores[torch.triu(upper_tri_indices, diagonal=0) == 1]
@@ -1367,4 +1370,144 @@ class ContrastiveEstimationPairwiseJoint(T5ForConditionalGeneration):
 
         return outputs
 
+
+
+class ContrastiveEstimationPairwiseJointExp(T5ForConditionalGeneration):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None,
+                 loss_type=['mle'], include_aug_q=True):
+        super().__init__(config)
+        self.supervision = supervision
+        self.ans_symbol_idx = ans_sym_id
+        self.max_answer_length = max_ans_len
+        self.tokenizer = tokenizer
+        self.loss_type = loss_type #'ull', 'lnorm', 'unnorm', 'eos', 'mle', 'nonover'
+        self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+        self.include_aug_q = include_aug_q
+        self.pairwise_proj1 = torch.nn.Linear(config.d_model, 2*config.d_model)
+        self.active = torch.nn.ReLU()
+        self.pairwise_proj2 = torch.nn.Linear(2*config.d_model, 1)
+
+
+    def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
+        batch_size, num_samples, seq_len = attention_mask.size()
+
+        #p (a|q, cij)
+        input_symbols = torch.ones(batch_size*num_samples, 1).fill_(self.ans_symbol_idx).type_as(attention_mask)
+        generated_ans = [input_symbols]
+
+        for i in range(max_len):
+            ans_outputs = self.decoder(
+                input_ids=input_symbols,
+                encoder_hidden_states=encoded_hidden_states.view(-1, encoded_hidden_states.size(-2),
+                                                                 encoded_hidden_states.size(-1)),
+                encoder_attention_mask=attention_mask.view(-1, attention_mask.size(-1))
+            )
+            ans_logits = self.lm_head(ans_outputs[0] * (self.model_dim ** -0.5))
+            ans_probs = ans_logits.log_softmax(-1)
+            pred_prob, pred_symbol = ans_probs[:, -1].topk(1, -1)
+            generated_ans.append(pred_symbol)
+            input_symbols = torch.cat([input_symbols, pred_symbol], -1)
+
+        generated_ans = torch.cat(generated_ans, -1)
+        ans_probs = ans_probs.view(batch_size, num_samples, -1, ans_probs.size(-1))
+        generated_ans = generated_ans.view(batch_size, num_samples, -1)
+        return [generated_ans, ans_probs]
+
+    def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None,
+                lm_labels=None, decoder_attention_mask=None, contrast_labels=None,
+                # to avoid errors
+                encoder_outputs=None, use_cache=None, decoder_past_key_value_states=None,
+                encoded_hidden_states=None, max_len=None, generate_answer=False):
+
+        batch_size, num_samples_q, seq_len = input_ids.size()
+        _, num_samples_a, ans_len = decoder_input_ids.size()
+        input_mask = (attention_mask.sum(-1) > 0).long()
+        output_mask = (decoder_attention_mask.sum(-1) > 0).long()
+
+        encoded_outputs = self.encoder(input_ids=input_ids.view(-1, input_ids.size(-1)),
+                                       attention_mask=attention_mask.view(-1, attention_mask.size(-1)))
+
+        encoded_states = encoded_outputs[0]
+        encoded_states_rep = encoded_states.unsqueeze(2).repeat(1, 1, num_samples_a, 1, 1)
+        encoded_states_rep = encoded_states_rep.view(batch_size, num_samples_q, num_samples_a, seq_len, -1)
+        attention_mask_rep = attention_mask.unsqueeze(2).repeat(1, 1, num_samples_a, 1)
+        attention_mask_rep = attention_mask_rep.view(batch_size, num_samples_q, num_samples_a, seq_len)
+
+        outputs = []
+        if generate_answer:
+            generated_out = self.generate(attention_mask=attention_mask, max_len=max_len,
+                                          encoded_hidden_states=encoded_states)
+            outputs.extend(generated_out)
+
+        decoder_input_ids_rep = decoder_input_ids.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_attention_mask_rep = decoder_attention_mask.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        lm_labels_rep = lm_labels.unsqueeze(1).repeat(1, num_samples_q, 1, 1)
+        decoder_input_ids_rep[decoder_input_ids_rep == -100] = 0
+        decoder_outputs = self.decoder(
+            input_ids=decoder_input_ids_rep.view(-1, decoder_input_ids.size(-1)),
+            attention_mask=decoder_attention_mask_rep.view(-1, decoder_attention_mask.size(-1)),
+            encoder_hidden_states=encoded_states_rep.view(-1, seq_len, encoded_states.size(-1)),
+            encoder_attention_mask=attention_mask_rep.view(-1, seq_len)
+        )
+
+        sequence_output = decoder_outputs[0]
+        sequence_output = sequence_output.view(batch_size, -1, ans_len, sequence_output.size(-1))
+        sequence_output = sequence_output * (self.model_dim ** -0.5)
+        lm_logits = self.lm_head(sequence_output)
+        lm_logprobs = lm_logits.log_softmax(-1)
+        lm_labels_flat = lm_labels_rep.view(-1)
+        lm_label_mask = (lm_labels_rep == -100).bool()
+        lm_logprobs_flat = lm_logprobs.view(-1, lm_logprobs.size(-1))
+        lm_labels_flat_mask = lm_label_mask.view(-1)
+
+        lm_labels_flat[lm_labels_flat == -100] = 0
+        log_ll_flat = torch.gather(lm_logprobs_flat, -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        logits_flat = torch.gather(lm_logits.view(-1, lm_logprobs.size(-1)), -1, lm_labels_flat.unsqueeze(1)).squeeze(-1)
+        log_ll_flat = log_ll_flat.masked_fill(lm_labels_flat_mask, 0)
+        logits_flat = logits_flat.masked_fill(lm_labels_flat_mask, 0)
+        output_len = decoder_attention_mask_rep.sum(-1)
+        log_ll_avg = log_ll_flat.view(batch_size,-1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        logits_avg = logits_flat.view(batch_size, -1, num_samples_a, ans_len).sum(-1) / \
+                 (output_len.view(batch_size, -1, num_samples_a) + 1)
+        answer_mask = input_mask.unsqueeze(-1) * output_mask.unsqueeze(1)
+        log_ll_avg = log_ll_avg.masked_fill(~answer_mask.bool(), 0)
+
+        pos_indices = torch.arange(0, num_samples_q).type_as(attention_mask)
+        pos_indices = pos_indices * num_samples_a + pos_indices
+        neg_indices = list(range(0, num_samples_a * num_samples_q))
+        for el in pos_indices.tolist():
+            neg_indices.remove(el)
+        neg_indices = torch.tensor(neg_indices).type_as(input_ids)
+
+        losses, score_fn = [], None
+
+        log_pll = log_ll_avg.view(batch_size, -1).index_select(1, pos_indices)
+        losses.append(- log_pll.sum(-1).unsqueeze(-1))
+
+        if output_mask.sum().item() % 2 == 0 and input_mask.sum().item() % 2 == 0:
+            eos_mask = (lm_labels_rep == self.eos_symbol_idx).view(batch_size, -1, ans_len)
+            sequence_eos = sequence_output.masked_select(eos_mask.unsqueeze(-1)).view(batch_size, num_samples_q*num_samples_a, -1)
+            seq_proj1 = self.pairwise_proj1(sequence_eos)
+            seq_act = self.active(seq_proj1)
+            seq_proj2 = self.pairwise_proj2(seq_act).squeeze(-1)
+            score_fn = seq_proj2
+            contrast_loss = []
+            for b in range(batch_size):
+                scores = score_fn[b].unsqueeze(0) + score_fn[b].unsqueeze(1)
+                upper_tri_indices = torch.ones(score_fn[b].size(0), score_fn[b].size(0))
+                # partition = scores[torch.triu(upper_tri_indices, diagonal=1) == 1]
+                partition = scores[torch.triu(upper_tri_indices, diagonal=0) == 1]
+                norm_partition = partition.log_softmax(-1)
+                contrast_loss.append(norm_partition[3].unsqueeze(0).unsqueeze(-1))
+
+            if len(contrast_loss) > 0:
+                contrast_loss = torch.cat(contrast_loss, 0)
+                losses.append(-contrast_loss)
+
+        loss = torch.cat(losses, 1).sum(-1).mean()
+
+        outputs += [loss, lm_logprobs]
+
+        return outputs
 
