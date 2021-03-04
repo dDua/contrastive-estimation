@@ -4,12 +4,17 @@ import argparse
 import random
 import spacy
 import tqdm
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+from quoref_scoring import QuorefAnswerScorer
 
 random.seed(53901)
 
 SPACY_NLP = spacy.load("en", disable=["parser"])
 
-def get_other_qa_contrastive_answers(paragraph_info):
+def get_other_qa_contrastive_answers(paragraph_info, answer_scorer):
     contrastive_qas = []
     if len(paragraph_info["qas"]) > 1:
         answer_grouped_questions = defaultdict(list)
@@ -51,20 +56,26 @@ def get_other_qa_contrastive_answers(paragraph_info):
                             continue
                         contrastive_answers.append([entity_list[i], entity_list[j]])
 
-            # Choosing a random element among the options because we can have only one contrastive answer as of
-            # now. This should change.
-            # TODO (pradeep): Use NER information to choose.
-            if len(contrastive_answers) > 1:
-                chosen_contrastive_answer = random.choice(contrastive_answers)
-            elif contrastive_answers:
-                chosen_contrastive_answer = contrastive_answers[0]
-            else:
-                chosen_contrastive_answer = None
-
-            if isinstance(chosen_contrastive_answer, str):
-                chosen_contrastive_answer = [chosen_contrastive_answer]
             # TODO: Make contrastive questions.
             for question_info in questions:
+                # Choosing a random element among the options because we can have only one contrastive answer as of
+                # now. This should change.
+                # TODO (pradeep): Use NER information to choose.
+                if len(contrastive_answers) > 1:
+                    if answer_scorer is not None:
+                        answer_scores = [answer_scorer.score_answer(paragraph_info["context"],
+                                                                    question_info["question"],
+                                                                    answer) for answer in contrastive_answers]
+                        chosen_contrastive_answer = sorted(zip(answer_scores, contrastive_answers), key=lambda x: x[0], reverse=True)[0][1]
+                    else:
+                        chosen_contrastive_answer = random.choice(contrastive_answers)
+                elif contrastive_answers:
+                    chosen_contrastive_answer = contrastive_answers[0]
+                else:
+                    continue
+
+                if isinstance(chosen_contrastive_answer, str):
+                    chosen_contrastive_answer = [chosen_contrastive_answer]
                 if chosen_contrastive_answer:
                     contrastive_qas.append({"id": question_info["id"],
                                             "topk": [" <multi> ".join(chosen_contrastive_answer)]})
@@ -155,6 +166,9 @@ def main():
                         help="""Heuristic for contrastive answers:
                                 'close' (entities close to question anchors) or
                                 'other' (answers of other questions)""")
+    parser.add_argument("--model",
+                        type=str,
+                        help="If provided, this model will be used to score candidates when heuristics give multiple options. If not, they will be chosen randomly.")
     parser.add_argument("--output", type=str, required=True)
 
     args = parser.parse_args()
@@ -162,12 +176,15 @@ def main():
     data = json.load(open(args.input))
 
     output_data = []
+    answer_scorer = None
+    if args.model:
+        answer_scorer = QuorefAnswerScorer(args.model)
     for datum in tqdm.tqdm(data["data"]):
         for paragraph_info in datum["paragraphs"]:
             if args.type == "close":
                 output_data.extend(get_close_contrastive_answers(paragraph_info))
             elif args.type == "other":
-                output_data.extend(get_other_qa_contrastive_answers(paragraph_info))
+                output_data.extend(get_other_qa_contrastive_answers(paragraph_info, answer_scorer))
             else:
                 raise RuntimeError(f"Unrecognized heuristic for generating contrastive answers: {args.type}")
 

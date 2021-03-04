@@ -1,8 +1,10 @@
 """
 Scores arbitrary answer candidates using a trained model.
 """
+import torch
+
 from transformers import T5Tokenizer
-from data.data_processing_quoref import QuorefDataBaseline
+from data.data_processing_quoref import QuorefQADataBaseline
 from model.answering_model import T5QAInfer
 
 
@@ -12,13 +14,13 @@ class QuorefAnswerScorer:
                  max_output_length=20,
                  max_context_length=650,
                  max_question_length=50):
-        special_tokens = QuorefDataBaseline.special_tokens
+        special_tokens = QuorefQADataBaseline.special_tokens
         self._tokenizer = T5Tokenizer.from_pretrained(trained_model_path)
-        self._tokenizer.tokenizer.add_special_tokens({"bos_token": "<bos>",
-                                                      "eos_token": "<eos>",
-                                                      "pad_token": "<pad>",
-                                                      "cls_token": "<cls>",
-                                                      "additional_special_tokens": special_tokens})
+        self._tokenizer.add_special_tokens({"bos_token": "<bos>",
+                                            "eos_token": "<eos>",
+                                            "pad_token": "<pad>",
+                                            "cls_token": "<cls>",
+                                            "additional_special_tokens": special_tokens})
         special_token_ids = self._tokenizer.convert_tokens_to_ids(special_tokens)
 
         self._bos_token_id = special_token_ids[0]
@@ -32,6 +34,8 @@ class QuorefAnswerScorer:
         self._model.eval()
 
     def score_answer(self, context, question, answer):
+        if isinstance(answer, list):
+            answer = " <multi> ".join(answer)
         full_context_ids = self._tokenizer.encode_plus(context)["input_ids"][:self._max_passage_length]
         question = question if question.endswith("?") else question + "?"
         question = "{0} {1} {2}".format("<question>", question, "<eos>")
@@ -46,9 +50,9 @@ class QuorefAnswerScorer:
         output_src = [answer_tokens[:-1]]
         output_mask = [answer_mask[:-1]]
         output_tgt = [answer_tokens[1:]]
-        model_outputs = self._model(input_ids=input_ids,
-                                    attention_mask=attention_mask,
-                                    decoder_input_ids=output_src,
-                                    lm_labels=output_tgt,
-                                    decoder_attention_mask=output_mask)
-        return model_outputs
+        model_outputs = self._model(input_ids=torch.tensor(input_ids),
+                                    attention_mask=torch.tensor(attention_mask),
+                                    decoder_input_ids=torch.tensor(output_src),
+                                    lm_labels=torch.tensor(output_tgt),
+                                    decoder_attention_mask=torch.tensor(output_mask))
+        return float(model_outputs[1].detach().numpy())
