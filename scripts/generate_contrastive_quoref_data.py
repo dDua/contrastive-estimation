@@ -9,21 +9,26 @@ random.seed(53901)
 
 SPACY_NLP = spacy.load("en", disable=["parser"])
 
+
+def get_answer_grouped_questions(paragraph_info):
+    answer_grouped_questions = defaultdict(list)
+    for qa_info in paragraph_info["qas"]:
+        if len(qa_info["answers"]) == 1:
+            answer = qa_info["answers"][0]
+            answer_text = answer["text"]
+            answer_key = (answer_text,)
+        else:
+            answer_key = tuple(answer["text"] for answer in qa_info["answers"])
+
+        answer_grouped_questions[answer_key].append({"question": qa_info["question"],
+                                                     "id": qa_info["id"]})
+    return answer_grouped_questions
+
+
 def get_other_qa_contrastive_answers(paragraph_info):
     contrastive_qas = []
     if len(paragraph_info["qas"]) > 1:
-        answer_grouped_questions = defaultdict(list)
-        for qa_info in paragraph_info["qas"]:
-            if len(qa_info["answers"]) == 1:
-                answer = qa_info["answers"][0]
-                answer_text = answer["text"]
-                answer_key = (answer_text,)
-            else:
-                answer_key = tuple(answer["text"] for answer in qa_info["answers"])
-
-            answer_grouped_questions[answer_key].append({"question": qa_info["question"],
-                                                         "id": qa_info["id"]})
-
+        answer_grouped_questions = get_answer_grouped_questions(paragraph_info)
         if len(answer_grouped_questions) == 1:
             # This means there is only one answer. Let's skip.
             return contrastive_qas
@@ -148,6 +153,32 @@ def get_close_contrastive_answers(paragraph_info):
                                     "topk": [" <multi> ".join(contrastive_answers)]})
     return contrastive_qas
 
+
+def add_questions_to_contrastive_answers(contrastive_answers, data):
+    contrastive_answers_dict = {d["id"]: d["topk"] for d in contrastive_answers}
+    contrastive_data_with_questions = []
+    for datum in data["data"]:
+        for paragraph_info in datum["paragraphs"]:
+            if len(paragraph_info["qas"]) == 1:
+                continue
+            answer_grouped_questions = get_answer_grouped_questions(paragraph_info)
+            qids = [qa_info["id"] for qa_info in paragraph_info["qas"]]
+            for qid in qids:
+                if qid not in contrastive_answers_dict:
+                    continue
+                answers = contrastive_answers_dict[qid]
+                contrastive_questions = []
+                for contrastive_answer in answers:
+                    key = tuple(contrastive_answer.split(" <multi> "))
+                    if key in answer_grouped_questions:
+                        contrastive_questions.extend([d["question"] for d in answer_grouped_questions[key]])
+                contrastive_data_with_questions.append({"id": qid,
+                                                        "topk": answers,
+                                                        "contrastive_questions": contrastive_questions})
+
+    return contrastive_data_with_questions
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=str, required=True)
@@ -155,22 +186,33 @@ def main():
                         help="""Heuristic for contrastive answers:
                                 'close' (entities close to question anchors) or
                                 'other' (answers of other questions)""")
+    parser.add_argument("--include_questions", action="store_true",
+                        help="If set, will also include questions")
+    parser.add_argument("--contrastive_answers", type=str,
+                        help="Read precomputed contrastive answers from this file")
     parser.add_argument("--output", type=str, required=True)
 
     args = parser.parse_args()
 
     data = json.load(open(args.input))
 
-    output_data = []
-    for datum in tqdm.tqdm(data["data"]):
-        for paragraph_info in datum["paragraphs"]:
-            if args.type == "close":
-                output_data.extend(get_close_contrastive_answers(paragraph_info))
-            elif args.type == "other":
-                output_data.extend(get_other_qa_contrastive_answers(paragraph_info))
-            else:
-                raise RuntimeError(f"Unrecognized heuristic for generating contrastive answers: {args.type}")
+    if args.contrastive_answers:
+        contrastive_answers = [json.loads(line) for line in open(args.contrastive_answers)]
+    else:
+        contrastive_answers_data = []
+        for datum in tqdm.tqdm(data["data"]):
+            for paragraph_info in datum["paragraphs"]:
+                if args.type == "close":
+                    contrastive_answers_data.extend(get_close_contrastive_answers(paragraph_info))
+                elif args.type == "other":
+                    contrastive_answers_data.extend(get_other_qa_contrastive_answers(paragraph_info))
+                else:
+                    raise RuntimeError(f"Unrecognized heuristic for generating contrastive answers: {args.type}")
 
+    if args.include_questions:
+        output_data = add_questions_to_contrastive_answers(contrastive_answers, data)
+    else:
+        output_data = contrastive_answers_data
     with open(args.output, "w") as outfile:
         for datum in output_data:
             print(json.dumps(datum), file=outfile)
