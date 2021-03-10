@@ -3072,7 +3072,8 @@ class ContrastiveEstimationAblationv5(T5ForConditionalGeneration):
 
 # answer conditional
 class ContrastiveEstimationAblationv6(T5ForConditionalGeneration):
-    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce'):
+    def __init__(self, config, supervision=None, ans_sym_id=None, max_ans_len=None, tokenizer=None, loss_type='ce',
+                ce_interpolation_factor=0.5):
         super().__init__(config)
         self.supervision = supervision
         self.ans_symbol_idx = ans_sym_id
@@ -3080,6 +3081,7 @@ class ContrastiveEstimationAblationv6(T5ForConditionalGeneration):
         self.tokenizer = tokenizer
         self.loss_type = loss_type #'ull', 'ce'
         self.eos_symbol_idx = self.tokenizer.convert_tokens_to_ids("<eos>")
+        self.ce_interpolation_factor = ce_interpolation_factor
 
 
     def generate(self, attention_mask=None, encoded_hidden_states=None, max_len=None):
@@ -3185,7 +3187,7 @@ class ContrastiveEstimationAblationv6(T5ForConditionalGeneration):
         log_ll = log_ll.view(batch_size, num_samples_q, num_samples_a)
 
         log_pll = log_ll.view(batch_size, -1).index_select(1, pos_indices)
-        loss = - log_pll.mean()
+        loss = - log_pll.mean() * (1 - self.ce_interpolation_factor)
 
         extra_ignore_indices = (input_ids.sum(-1) > 0).unsqueeze(-1).repeat(1, 1, num_samples_a).\
             view(batch_size, num_samples_q*num_samples_a).long()
@@ -3206,7 +3208,7 @@ class ContrastiveEstimationAblationv6(T5ForConditionalGeneration):
 
             contrast_loss = torch.cat(contrast_loss, -1)
 
-            loss += - contrast_loss.sum(-1).mean()
+            loss += - contrast_loss.sum(-1).mean() * self.ce_interpolation_factor
             outputs += [loss, lm_logprobs, contrast_logits]
 
         elif self.loss_type == 'ull' and (output_mask.sum().item() != 1):

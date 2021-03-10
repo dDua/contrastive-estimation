@@ -37,6 +37,10 @@ def get_arguments():
     parser.add_argument("--prior_coef", type=float, default=1.0)
     parser.add_argument("--z_coef", type=float, default=1.0)
 
+    # "answer", "question", or "joint" (TODO)
+    parser.add_argument("--ce_conditional_type", type=str)
+    # Modify this to change the relative weight of MLE and CE losses.
+    parser.add_argument("--ce_interpolation_factor", type=float, default=0.5)
     # Preprocessing/decoding-related parameters
     parser.add_argument('--max_question_length', type=int, default=50)
     parser.add_argument('--max_context_length', type=int, default=512)
