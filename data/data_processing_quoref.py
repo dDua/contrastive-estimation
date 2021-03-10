@@ -178,7 +178,7 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
                 for question_candidate in self.topk_candidates[qa_pair["id"]]["questions"]:
                     question_candidate_tokens = self.tokenizer.encode_plus(question_candidate,
                                                                            max_length=self.args.max_question_length)["input_ids"]
-                    input_ids += [self.special_token_ids[0]] + context_info[0]["tokens"] + question_candidate_tokens
+                    input_ids.append([self.special_token_ids[0]] + context_info[0]["tokens"] + question_candidate_tokens)
 
             all_instances.append({"input_ids": input_ids, "answer_input": answer_inputs,
                                   "answer_mask": answer_masks, "answer_output": answer_outputs})
