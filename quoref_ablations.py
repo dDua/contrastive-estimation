@@ -20,6 +20,7 @@ from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger, Output
 from transformers import T5Tokenizer, T5ForConditionalGeneration
 from transformers import AdamW
 from model.comparison_model import *
+from model.contrastive_models import ContrastiveEstimationQuestionCond
 from configs.t5_quoref_config import get_arguments as get_arguments_quoref
 #from configs.t5_ropes_config import get_arguments as get_arguments_ropes
 #from configs.comparison_config import get_arguments as get_arguments_comp
@@ -55,17 +56,29 @@ def train():
 
     logger.info("Prepare tokenizer, pretrained model and optimizer - add special tokens for fine-tuning")
 
-    tokenizer_class, model_class, dataset_class = T5Tokenizer, ContrastiveEstimationAblationv6, QuorefQADataBaselineAblation
+    tokenizer_class, dataset_class = T5Tokenizer, QuorefQADataBaselineAblation
     tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
     tokenizer.add_special_tokens({"bos_token": "<bos>", "eos_token": "<eos>", "pad_token": "<pad>",
                                    "cls_token": "<cls>", "additional_special_tokens": dataset_class.special_tokens})
     dataset = dataset_class(logger, args, tokenizer, contrastive_data=args.contrastive_data, lazy=args.lazy, y_only=True, y_types='topk')
     out_symbol_idx = tokenizer.convert_tokens_to_ids("<answer>")
-    model = model_class.from_pretrained(args.model_checkpoint, **{"ans_sym_id": out_symbol_idx,
-                                                                  "max_ans_len": args.max_output_length,
-                                                                  "tokenizer": tokenizer,
-                                                                  "loss_type": "ull"
-                                                                })
+    if args.ce_conditional_type == "answer":
+        model_class = ContrastiveEstimationAblationv6
+        model = model_class.from_pretrained(args.model_checkpoint,
+                                            **{"ans_sym_id": out_symbol_idx,
+                                               "max_ans_len": args.max_output_length,
+                                               "tokenizer": tokenizer,
+                                               "loss_type": ["mle", "unnorm"]})
+    elif args.ce_conditional_type == "question":
+        model_class = ContrastiveEstimationQuestionCond
+        model = model_class.from_pretrained(args.model_checkpoint,
+                                            **{"ans_sym_id": out_symbol_idx,
+                                               "max_ans_len": args.max_output_length,
+                                               "tokenizer": tokenizer,
+                                               "loss_type": "ce",
+                                               "ce_interpolation_factor": args.ce_interpolation_factor})
+    else:
+        raise RuntimeError(f"Unrecognized CE conditional type: {args.ce_conditional_type}")
     model.to(args.device)
 
     optimizer = AdamW(model.parameters(), lr=args.lr)

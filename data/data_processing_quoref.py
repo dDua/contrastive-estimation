@@ -126,7 +126,11 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
             jobj = json.loads(line)
             if self.args.lowercase:
                 jobj["topk"] = [t_k.lower().strip() for t_k in jobj["topk"]]
-            self.topk_candidates[jobj["id"]] = jobj["topk"]
+                if "contrastive_questions" in jobj:
+                    jobj["contrastive_questions"] = [s.lower().strip() for s in jobj["contrastive_questions"]]
+
+            self.topk_candidates[jobj["id"]] = {"answers": jobj["topk"],
+                                                "questions": jobj["contrastive_questions"] if "contrastive_questions" in jobj else []}
 
 
     def get_instance(self, instance):
@@ -162,7 +166,7 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
             if self.y_only and instance["mode"] == "train":
                 gold_ids = self.tokenizer.encode_plus(" ".join(original_answers))["input_ids"]
                 candidate_ids = [self.tokenizer.encode_plus(candidate)["input_ids"]
-                                 for candidate in self.topk_candidates[qa_pair["id"]]]
+                                 for candidate in self.topk_candidates[qa_pair["id"]]["answers"]]
                 candidate_list = self.rank_candidates(gold_ids, candidate_ids)
                 for candidate in candidate_list:
                     candidate_tokens = [self.special_token_ids[5]] + candidate + [self.special_token_ids[1]]
@@ -171,6 +175,10 @@ class QuorefQADataBaselineAblation(HotpotQADataBase):
                     answer_masks += [[1] * (len(candidate_tokens) - 1) +
                                      [0]*(self.args.max_output_length - len(candidate_tokens))]
 
+                for question_candidate in self.topk_candidates[qa_pair["id"]]["questions"]:
+                    question_candidate_tokens = self.tokenizer.encode_plus(question_candidate,
+                                                                           max_length=self.args.max_question_length)["input_ids"]
+                    input_ids += [self.special_token_ids[0]] + context_info[0]["tokens"] + question_candidate_tokens
 
             all_instances.append({"input_ids": input_ids, "answer_input": answer_inputs,
                                   "answer_mask": answer_masks, "answer_output": answer_outputs})
