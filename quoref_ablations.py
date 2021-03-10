@@ -62,15 +62,15 @@ def train():
                                    "cls_token": "<cls>", "additional_special_tokens": dataset_class.special_tokens})
     dataset = dataset_class(logger, args, tokenizer, contrastive_data=args.contrastive_data, lazy=args.lazy, y_only=True, y_types='topk')
     out_symbol_idx = tokenizer.convert_tokens_to_ids("<answer>")
-    if args.ce_conditional_type == "answer":
-        model_class = ContrastiveEstimationAblationv6
+    if args.ce_conditional_type == "question":
+        model_class = ContrastiveEstimationQuestionCond
         model = model_class.from_pretrained(args.model_checkpoint,
                                             **{"ans_sym_id": out_symbol_idx,
                                                "max_ans_len": args.max_output_length,
                                                "tokenizer": tokenizer,
                                                "loss_type": ["mle", "unnorm"]})
-    elif args.ce_conditional_type == "question":
-        model_class = ContrastiveEstimationQuestionCond
+    elif args.ce_conditional_type == "answer":
+        model_class = ContrastiveEstimationAblationv6
         model = model_class.from_pretrained(args.model_checkpoint,
                                             **{"ans_sym_id": out_symbol_idx,
                                                "max_ans_len": args.max_output_length,
