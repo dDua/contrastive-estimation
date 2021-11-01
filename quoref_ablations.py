@@ -1,5 +1,4 @@
-# Copyright (c) 2019-present
-# Original codebase written by HuggingFace Inc. (https://github.com/huggingface/transfer-learning-conv-ai)
+# Adapted from original codebase written by HuggingFace Inc. (https://github.com/huggingface/transfer-learning-conv-ai)
 
 import os
 import math
