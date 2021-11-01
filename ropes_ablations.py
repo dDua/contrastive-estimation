@@ -52,9 +52,9 @@ def train():
     logger.info("Prepare tokenizer, pretrained model and optimizer - add special tokens for fine-tuning")
 
     all_model_classes = [ContrastiveEstimationAnswerCond, ContrastiveEstimationQuestionCond,
-                        ContrastiveEstimationFullPartition, ContrastiveEstimationFullPartitionExp,
-                        ContrastiveEstimationAblationMultilabel, ContrastiveEstimationPairwiseJoint,
-                        ContrastiveEstimationQnAMixture]
+                        ContrastiveEstimationFullPartition, ContrastiveEstimationQnAMixture,
+                        ContrastiveEstimationAblationMultilabel, ContrastiveEstimationPairwiseJoint]
+
     tokenizer_class, model_class, dataset_class = T5Tokenizer, all_model_classes[1], \
                                                   RopesQADataAblationv2
 
