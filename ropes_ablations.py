@@ -55,7 +55,7 @@ def train():
                         ContrastiveEstimationFullPartition, ContrastiveEstimationFullPartitionExp,
                         ContrastiveEstimationAblationMultilabel, ContrastiveEstimationPairwiseJoint,
                         ContrastiveEstimationQnAMixture]
-    tokenizer_class, model_class, dataset_class = T5Tokenizer, all_model_classes[0], \
+    tokenizer_class, model_class, dataset_class = T5Tokenizer, all_model_classes[1], \
                                                   RopesQADataAblationv2
 
 
