@@ -11,4 +11,4 @@ If it is a new dataset and you don't have an answering model for it, then it can
 
 This code has been developed on
 
-python3.6 transformers==2.9.1 pytorch-ignite==0.2.0
+python3.6; transformers==2.9.1; pytorch-ignite==0.2.0
