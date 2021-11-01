@@ -8,3 +8,7 @@ Then start training the CE model with
 python3 -m torch.distributed.launch --nproc_per_node=4 ropes_ablations.py --model_checkpoint <pretrained answering model path> --output_dir <output_path>
 
 If it is a new dataset and you don't have an answering model for it, then it can be trained by passing loss type as only "mle" while initializing model_class to ContrastiveEstimationAnswerCond type model
+
+This code has been developed on
+
+python3.6 transformers==2.9.1 pytorch-ignite==0.2.0
