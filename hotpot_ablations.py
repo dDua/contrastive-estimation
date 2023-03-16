@@ -20,8 +20,6 @@ from transformers import T5Tokenizer, T5ForConditionalGeneration
 from transformers import AdamW
 from model.contrastive_models import *
 from configs.comparison_config import get_arguments as get_arguments_comp
-from data.data_processing_ropes import *
-from data.data_processing_contrast import *
 from data.data_process_hotpot import *
 from utils import get_exact_match, get_f1
 
@@ -53,7 +51,7 @@ def train():
     logger.info("Prepare tokenizer, pretrained model and optimizer - add special tokens for fine-tuning")
 
     tokenizer_class, model_class, dataset_class = T5Tokenizer, ContrastiveEstimationQuestionCond, \
-                                                  HotpotQADataComparisonAblationsv2
+                                                  HotpotQAData
 
 
     tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
