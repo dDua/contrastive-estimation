@@ -9,6 +9,8 @@ python3 -m torch.distributed.launch --nproc_per_node=4 ropes_ablations.py --mode
 
 If it is a new dataset and you don't have an answering model for it, then it can be trained by passing loss type as only "mle" while initializing model_class to ContrastiveEstimationAnswerCond type model
 
-This code has been developed on
+This code requires following dependencies
 
-python3.6; transformers==2.9.1; pytorch-ignite==0.2.0
++ python3.6 
++ transformers (version 2.9.1)
++ pytorch-ignite (version 0.2.0)
