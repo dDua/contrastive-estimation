@@ -147,7 +147,6 @@ class ContrastiveEstimationFullPartition(T5ForConditionalGeneration):
             contrast_loss, contrast_logits = [], []
 
             for i in range(num_samples_q):
-                # if input_mask[0][i].item() == 1:
                 if input_mask[0][i].item() == 1:
                     ignore_mask = torch.ones(batch_size, num_samples_q*num_samples_a).type_as(attention_mask)
                     ignore_mask[:, pos_indices] = 0
