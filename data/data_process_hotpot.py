@@ -11,7 +11,7 @@ x_only: Used in Question conditional case when only num_cont_ques_cand question 
 x_types, y_types: These are dataset specific params than can be used to defined the type of questions 
                    (e.g., generated, mined, topk etc.) can be specified. For a default case they need not be used.
 """
-class HotpotQADataComparisonAblationsv1(HotpotQADataBase):
+class HotpotQAData(HotpotQADataBase):
     def __init__(self, logger, args, tokenizer, lazy=False, x_only=False, y_only=False, y_types='topk',
                  x_types=None):
         super().__init__(logger, args, tokenizer)
