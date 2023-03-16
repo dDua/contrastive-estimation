@@ -80,7 +80,7 @@ def train():
 
     logger.info("Prepare datasets")
     train_loader, train_sampler, val_loader, valid_sampler = dataset.get_data_loaders(lazy=args.lazy)
-    print(len(train_loader), len(val_loader))
+    logger.info(f"Size of train: {len(train_loader)}, Size of validation set: {len(val_loader)})
 
     # Training function and trainer
     def update(engine, batch):
